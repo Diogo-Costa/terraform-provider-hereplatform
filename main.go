@@ -10,6 +10,9 @@ import (
 	"github.com/Diogo-Costa/terraform-provider-hereplatform/internal/provider"
 )
 
+//go:generate terraform fmt -recursive ./examples/
+//go:generate go tool tfplugindocs generate --provider-name hereplatform --rendered-provider-name "HERE platform"
+
 // version is set by goreleaser.
 var version = "dev"
 
