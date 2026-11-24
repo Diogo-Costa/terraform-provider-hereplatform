@@ -43,7 +43,8 @@ func TestJWTAssertion(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	form := url.Values{"grant_type": {"client_credentials"}}
 	header := http.Header{}
-	if err := auth.authenticate(form, header, DefaultTokenURL, now); err != nil {
+	secrets, err := auth.authenticate(form, header, DefaultTokenURL, now)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -58,6 +59,9 @@ func TestJWTAssertion(t *testing.T) {
 	}
 
 	assertion := form.Get("client_assertion")
+	if len(secrets) != 1 || secrets[0] != assertion {
+		t.Fatal("the client assertion must be reported as a secret")
+	}
 	parsed, err := jwt.Parse(assertion, func(*jwt.Token) (any, error) { return &key.PublicKey, nil },
 		jwt.WithValidMethods([]string{"RS256"}), jwt.WithTimeFunc(func() time.Time { return now }))
 	if err != nil {
@@ -103,7 +107,7 @@ func TestJWTAssertionIsUniqueAndKidOptional(t *testing.T) {
 	seen := map[string]bool{}
 	for range 10 {
 		form := url.Values{}
-		if err := auth.authenticate(form, http.Header{}, DefaultTokenURL, time.Now()); err != nil {
+		if _, err := auth.authenticate(form, http.Header{}, DefaultTokenURL, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		tok, _, err := jwt.NewParser().ParseUnverified(form.Get("client_assertion"), jwt.MapClaims{})

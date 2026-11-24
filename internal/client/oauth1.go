@@ -32,10 +32,10 @@ func NewOAuth1Auth(accessKeyID, accessKeySecret string) (Auth, error) {
 	return &oauth1Auth{accessKeyID: accessKeyID, accessKeySecret: accessKeySecret, nonce: rand.Text}, nil
 }
 
-func (a *oauth1Auth) authenticate(form url.Values, header http.Header, tokenURL string, now time.Time) error {
+func (a *oauth1Auth) authenticate(form url.Values, header http.Header, tokenURL string, now time.Time) ([]string, error) {
 	u, err := url.Parse(tokenURL)
 	if err != nil {
-		return errors.New("invalid token URL")
+		return nil, errors.New("invalid token URL")
 	}
 	oauth := map[string]string{
 		"oauth_consumer_key":     a.accessKeyID,
@@ -55,12 +55,11 @@ func (a *oauth1Auth) authenticate(form url.Values, header http.Header, tokenURL 
 		params.Add(k, v)
 	}
 	base := signatureBaseString(http.MethodPost, u, params)
-	oauth["oauth_signature"] = hmacSignature(sha256.New, a.accessKeySecret, "", base)
+	signature := hmacSignature(sha256.New, a.accessKeySecret, "", base)
+	oauth["oauth_signature"] = signature
 	header.Set("Authorization", oauthHeader(oauth))
-	return nil
+	return []string{a.accessKeySecret, signature, PercentEncode(signature)}, nil
 }
-
-func (a *oauth1Auth) secrets() []string { return []string{a.accessKeySecret} }
 
 // signatureBaseString implements RFC 5849 3.4.1; params must already merge query, body
 // and oauth_* protocol parameters (excluding oauth_signature and realm).

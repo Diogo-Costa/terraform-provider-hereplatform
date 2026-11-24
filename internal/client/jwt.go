@@ -49,7 +49,7 @@ func ParseRSAPrivateKey(pemData string) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
-func (a *jwtAuth) authenticate(form url.Values, _ http.Header, tokenURL string, now time.Time) error {
+func (a *jwtAuth) authenticate(form url.Values, _ http.Header, tokenURL string, now time.Time) ([]string, error) {
 	claims := jwt.MapClaims{
 		"iss": a.clientID,
 		"sub": a.clientID,
@@ -65,11 +65,9 @@ func (a *jwtAuth) authenticate(form url.Values, _ http.Header, tokenURL string, 
 	}
 	signed, err := token.SignedString(a.key)
 	if err != nil {
-		return errors.New("signing client assertion failed")
+		return nil, errors.New("signing client assertion failed")
 	}
 	form.Set("client_assertion_type", clientAssertionType)
 	form.Set("client_assertion", signed)
-	return nil
+	return []string{signed}, nil
 }
-
-func (*jwtAuth) secrets() []string { return nil }

@@ -23,6 +23,9 @@ const (
 	defaultPollMin       = 2 * time.Second
 	defaultPollMax       = 15 * time.Second
 	defaultPollTimeout   = 5 * time.Minute
+	// maxRetryAfter caps Retry-After before conversion, which could overflow time.Duration;
+	// any value above RetryPolicy.MaxRetryAfter fails the request anyway.
+	maxRetryAfter = 24 * time.Hour
 )
 
 // RetryPolicy bounds transport-level retries of throttled, failed or unreachable requests.
@@ -109,14 +112,15 @@ func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
 	if value == "" {
 		return 0, false
 	}
-	if secs, err := strconv.Atoi(value); err == nil {
+	// ParseInt returns the extreme value with ErrRange, which the clamp handles.
+	if secs, err := strconv.ParseInt(value, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
 		if secs < 0 {
 			return 0, false
 		}
-		return time.Duration(secs) * time.Second, true
+		return time.Duration(min(secs, int64(maxRetryAfter/time.Second))) * time.Second, true
 	}
 	if t, err := http.ParseTime(value); err == nil {
-		return max(t.Sub(now), 0), true
+		return min(max(t.Sub(now), 0), maxRetryAfter), true
 	}
 	return 0, false
 }

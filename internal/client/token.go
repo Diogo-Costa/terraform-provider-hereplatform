@@ -6,29 +6,37 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const (
 	grantTypeClientCredentials = "client_credentials"
-	// Used only when HERE omits expires_in; a premature expiry is recovered by the 401 refresh.
-	fallbackTokenLifetime = time.Hour
-	maxRefreshMargin      = 5 * time.Minute
+	// tokenLifetime is requested because a token can manage every app the provider reaches:
+	// an hour bounds a leak, where the app default is up to 24 h. Also assumed when HERE
+	// omits expires_in; a premature expiry is recovered by the 401 refresh.
+	tokenLifetime = time.Hour
+	// maxTokenLifetime is HERE's ceiling; larger expires_in values are clamped before they
+	// can overflow time.Duration.
+	maxTokenLifetime = 24 * time.Hour
+	maxRefreshMargin = 5 * time.Minute
 )
 
 // TokenSource supplies bearer tokens for the HERE IAM API.
 type TokenSource interface {
 	Token(ctx context.Context) (string, error)
-	// Invalidate drops token if it is still cached, so the next call fetches a new one.
-	Invalidate(token string)
+	// Invalidate drops token if it is still cached, so the next call fetches a new one. It
+	// gives up when ctx ends first.
+	Invalidate(ctx context.Context, token string)
 }
 
 // Auth authenticates a single token request. Implementations must produce fresh
 // credentials on every call: HERE rejects replayed OAuth nonces and JWT assertions.
 type Auth interface {
-	authenticate(form url.Values, header http.Header, tokenURL string, now time.Time) error
-	secrets() []string
+	// authenticate returns the secrets the request carries or is signed with, which errors
+	// must never echo.
+	authenticate(form url.Values, header http.Header, tokenURL string, now time.Time) ([]string, error)
 }
 
 type tokenResponse struct {
@@ -81,8 +89,13 @@ func (s *cachingTokenSource) Token(ctx context.Context) (string, error) {
 	return token, nil
 }
 
-func (s *cachingTokenSource) Invalidate(token string) {
-	s.lock <- struct{}{}
+func (s *cachingTokenSource) Invalidate(ctx context.Context, token string) {
+	select {
+	case s.lock <- struct{}{}:
+	case <-ctx.Done():
+		// The caller is giving up and will not use a new token.
+		return
+	}
 	defer func() { <-s.lock }()
 	if s.token == token {
 		s.token = ""
@@ -92,25 +105,29 @@ func (s *cachingTokenSource) Invalidate(token string) {
 
 func (s *cachingTokenSource) fetch(ctx context.Context) (string, time.Duration, time.Time, error) {
 	var obtainedAt time.Time
-	build := func(ctx context.Context) (*http.Request, error) {
+	build := func(ctx context.Context) (*http.Request, []string, error) {
 		obtainedAt = s.t.now()
-		form := url.Values{"grant_type": {grantTypeClientCredentials}}
+		form := url.Values{
+			"grant_type": {grantTypeClientCredentials},
+			"expires_in": {strconv.FormatInt(int64(tokenLifetime/time.Second), 10)},
+		}
 		header := http.Header{}
-		if err := s.auth.authenticate(form, header, s.tokenURL, obtainedAt); err != nil {
-			return nil, err
+		secrets, err := s.auth.authenticate(form, header, s.tokenURL, obtainedAt)
+		if err != nil {
+			return nil, nil, err
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.tokenURL, strings.NewReader(form.Encode()))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for k, v := range header {
 			req.Header[k] = v
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		return req, nil
+		return req, secrets, nil
 	}
 
-	resp, err := s.t.send(ctx, "token", build, true, s.auth.secrets()...)
+	resp, err := s.t.send(ctx, "token", build, true)
 	if err != nil {
 		return "", 0, time.Time{}, fmt.Errorf("requesting HERE access token: %w", err)
 	}
@@ -122,18 +139,19 @@ func (s *cachingTokenSource) fetch(ctx context.Context) (string, time.Duration, 
 	if token == "" {
 		return "", 0, time.Time{}, fmt.Errorf("requesting HERE access token: response has no access token")
 	}
-	lifetime := fallbackTokenLifetime
-	if secs := parsePositiveSeconds(string(body.ExpiresIn), string(body.ExpiresInCamel)); secs > 0 {
-		lifetime = secs
+	lifetime := tokenLifetime
+	if d := parsePositiveSeconds(maxTokenLifetime, string(body.ExpiresIn), string(body.ExpiresInCamel)); d > 0 {
+		lifetime = d
 	}
 	return token, lifetime, obtainedAt, nil
 }
 
-func parsePositiveSeconds(values ...string) time.Duration {
+// parsePositiveSeconds returns the first positive number of seconds in values, at most limit.
+func parsePositiveSeconds(limit time.Duration, values ...string) time.Duration {
 	for _, v := range values {
 		var secs int64
 		if _, err := fmt.Sscan(v, &secs); err == nil && secs > 0 {
-			return time.Duration(secs) * time.Second
+			return time.Duration(min(secs, int64(limit/time.Second))) * time.Second
 		}
 	}
 	return 0
@@ -143,7 +161,7 @@ func parsePositiveSeconds(values ...string) time.Duration {
 type staticTokenSource string
 
 func (s staticTokenSource) Token(context.Context) (string, error) { return string(s), nil }
-func (staticTokenSource) Invalidate(string)                       {}
+func (staticTokenSource) Invalidate(context.Context, string)      {}
 
 // StaticTokenSource returns a TokenSource that always yields token.
 func StaticTokenSource(token string) TokenSource {

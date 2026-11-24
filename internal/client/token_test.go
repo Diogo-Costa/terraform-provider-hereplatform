@@ -39,6 +39,8 @@ type tokenServer struct {
 	body      func(n int) (int, string)
 	onRequest func(r *http.Request)
 	secret    string
+	// lastBase is the OAuth1 signature base string of the latest request.
+	lastBase atomic.Pointer[string]
 }
 
 func (s *tokenServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +59,9 @@ func (s *tokenServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.PostForm.Get("grant_type") != "client_credentials" {
 		s.t.Errorf("grant_type = %q", r.PostForm.Get("grant_type"))
+	}
+	if got := r.PostForm.Get("expires_in"); got != "3600" {
+		s.t.Errorf("expires_in = %q, want 3600", got)
 	}
 	if r.PostForm.Has("scope") {
 		s.t.Error("token request must be unscoped")
@@ -90,8 +95,9 @@ func (s *tokenServer) verifyOAuth1(r *http.Request) {
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	want := hmacSignature(sha256.New, s.secret, "", signatureBaseString(r.Method, u, all))
-	if signature != want {
+	base := signatureBaseString(r.Method, u, all)
+	s.lastBase.Store(&base)
+	if signature != hmacSignature(sha256.New, s.secret, "", base) {
 		s.t.Errorf("OAuth signature does not verify")
 	}
 	if params["oauth_signature_method"] != "HMAC-SHA256" || params["oauth_version"] != "1.0" {
@@ -160,10 +166,48 @@ func TestTokenRefreshWindow(t *testing.T) {
 	clock.Advance(2 * time.Second)
 	mustToken("tok-2")
 
-	src.Invalidate("stale-token")
+	src.Invalidate(t.Context(), "stale-token")
 	mustToken("tok-2")
-	src.Invalidate("tok-2")
+	src.Invalidate(t.Context(), "tok-2")
 	mustToken("tok-3")
+}
+
+func TestTokenRequestSignsItsLifetime(t *testing.T) {
+	ts := &tokenServer{}
+	src := newTokenSourceForTest(t, ts, &fakeClock{now: time.Now()})
+	if _, err := src.Token(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// Parameters are sorted and encoded twice in the base string: & becomes %26, = becomes %3D.
+	base := ts.lastBase.Load()
+	if base == nil || !strings.Contains(*base, "&expires_in%3D3600%26grant_type%3Dclient_credentials%26oauth_") {
+		t.Fatalf("expires_in=3600 is not signed, base string %v", base)
+	}
+}
+
+func TestInvalidateGivesUpWithItsContext(t *testing.T) {
+	ts := &tokenServer{}
+	src := newTokenSourceForTest(t, ts, &fakeClock{now: time.Now()})
+	if _, err := src.Token(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	src.lock <- struct{}{}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		src.Invalidate(ctx, "tok-1")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Invalidate waits for the lock after its context ended")
+	}
+	<-src.lock
+	if tok, err := src.Token(t.Context()); err != nil || tok != "tok-1" {
+		t.Fatalf("an abandoned Invalidate must leave the cache alone, got %q, %v", tok, err)
+	}
 }
 
 func TestTokenResponseFormats(t *testing.T) {
@@ -174,7 +218,10 @@ func TestTokenResponseFormats(t *testing.T) {
 	}{
 		{name: "snake case", body: `{"access_token":"abc","expires_in":3600}`, lifetime: 3600 * time.Second},
 		{name: "camel case", body: `{"accessToken":"abc","expiresIn":"600"}`, lifetime: 600 * time.Second},
-		{name: "no lifetime", body: `{"access_token":"abc"}`, lifetime: fallbackTokenLifetime},
+		{name: "no lifetime", body: `{"access_token":"abc"}`, lifetime: tokenLifetime},
+		{name: "lifetime above the maximum", body: `{"access_token":"abc","expires_in":9223372036854775807}`, lifetime: maxTokenLifetime},
+		{name: "lifetime beyond int64", body: `{"access_token":"abc","expiresIn":"99999999999999999999"}`, lifetime: tokenLifetime},
+		{name: "negative lifetime", body: `{"access_token":"abc","expires_in":-5}`, lifetime: tokenLifetime},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -242,6 +289,43 @@ func TestTokenErrors(t *testing.T) {
 	}
 }
 
+func TestTokenErrorsRedactTheClientAssertion(t *testing.T) {
+	var sent atomic.Pointer[string]
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		assertion := r.PostForm.Get("client_assertion")
+		sent.Store(&assertion)
+		// A prefix stands for an error message that cuts the assertion short.
+		writeJSON(w, http.StatusBadRequest, fmt.Sprintf(`{"title":"invalid client_assertion %s","code":%q,"correlationId":%q}`,
+			assertion, assertion, assertion[:40]))
+	}))
+	t.Cleanup(srv.Close)
+	auth, err := NewJWTAuth("client-123", "key-1", testRSAKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := &transport{
+		http:      srv.Client(),
+		userAgent: "test",
+		retry:     RetryPolicy{MaxAttempts: 1}.withDefaults(),
+		now:       time.Now,
+		sleep:     func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
+	}
+	_, err = newCachingTokenSource(auth, srv.URL+"/oauth2/token", tr).Token(t.Context())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	assertion := sent.Load()
+	if assertion == nil || len(*assertion) < 40 {
+		t.Fatal("no client assertion was sent")
+	}
+	if msg := err.Error(); strings.Contains(msg, (*assertion)[:12]) || strings.Count(msg, redacted) != 3 {
+		t.Fatal("the client assertion must be redacted in the title, the code and the correlation ID")
+	}
+}
+
 func TestTokenRequestRetriesServerErrorsWithFreshSignature(t *testing.T) {
 	var nonces sync.Map
 	ts := &tokenServer{
@@ -281,7 +365,7 @@ func TestTokenWaitsForContext(t *testing.T) {
 
 func TestStaticTokenSource(t *testing.T) {
 	src := StaticTokenSource("fixed")
-	src.Invalidate("fixed")
+	src.Invalidate(t.Context(), "fixed")
 	if tok, err := src.Token(t.Context()); err != nil || tok != "fixed" {
 		t.Fatalf("Token() = %q, %v", tok, err)
 	}

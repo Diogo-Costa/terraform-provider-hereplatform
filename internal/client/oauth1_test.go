@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -103,7 +104,8 @@ func TestOAuth1AuthenticateHEREVector(t *testing.T) {
 
 	form := url.Values{"grant_type": {"client_credentials"}}
 	header := http.Header{}
-	if err := oa.authenticate(form, header, DefaultTokenURL, time.Unix(1700000000, 0)); err != nil {
+	secrets, err := oa.authenticate(form, header, DefaultTokenURL, time.Unix(1700000000, 0))
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,6 +118,10 @@ func TestOAuth1AuthenticateHEREVector(t *testing.T) {
 	if got := form.Encode(); got != "grant_type=client_credentials" {
 		t.Fatalf("form must only carry grant_type, got %q", got)
 	}
+	signature := "O2KCEmpzaCxNJbACr8bo86OkjcmSTA4oKMJIzSQjaGw="
+	if !slices.Equal(secrets, []string{"test/secret+value=", signature, PercentEncode(signature)}) {
+		t.Fatal("authenticate must report the access key secret and both forms of the signature")
+	}
 }
 
 func TestOAuth1NonceIsUniquePerRequest(t *testing.T) {
@@ -126,7 +132,7 @@ func TestOAuth1NonceIsUniquePerRequest(t *testing.T) {
 	seen := map[string]bool{}
 	for range 50 {
 		header := http.Header{}
-		if err := auth.authenticate(url.Values{}, header, DefaultTokenURL, time.Now()); err != nil {
+		if _, err := auth.authenticate(url.Values{}, header, DefaultTokenURL, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		params := parseOAuthHeader(t, header.Get("Authorization"))

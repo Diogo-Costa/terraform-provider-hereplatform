@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -101,6 +102,7 @@ func newAPIError(resp *response, secrets ...string) *APIError {
 	if e.CorrelationID == "" {
 		e.CorrelationID = resp.header.Get("X-Correlation-ID")
 	}
+	// Redacted before truncation, which could otherwise cut a secret beyond recognition.
 	e.Title = truncate(redact(e.Title, secrets...), maxTitleLength)
 	e.Code = truncate(redact(e.Code, secrets...), maxTitleLength)
 	e.CorrelationID = truncate(redact(e.CorrelationID, secrets...), maxTitleLength)
@@ -108,13 +110,17 @@ func newAPIError(resp *response, secrets ...string) *APIError {
 	return e
 }
 
+// jwsPattern matches JWS compact serializations, the form of HERE access tokens and client
+// assertions, so that an echoed token is redacted even when it is not one this client sent.
+var jwsPattern = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]*){0,2}`)
+
 func redact(s string, secrets ...string) string {
 	for _, secret := range secrets {
 		if secret != "" {
 			s = strings.ReplaceAll(s, secret, redacted)
 		}
 	}
-	return s
+	return jwsPattern.ReplaceAllString(s, redacted)
 }
 
 func truncate(s string, n int) string {

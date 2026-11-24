@@ -158,20 +158,22 @@ type transport struct {
 	sleep     func(context.Context, time.Duration) error
 }
 
-// send runs build once per attempt so each retry carries fresh signatures and tokens.
+// send runs build once per attempt so each retry carries fresh signatures and tokens;
+// build also returns the credentials in the request, which errors must never echo.
 // Bodies are never logged: they can contain tokens, assertions or API key values.
 func (t *transport) send(
 	ctx context.Context,
 	op string,
-	build func(context.Context) (*http.Request, error),
+	build func(context.Context) (*http.Request, []string, error),
 	idempotent bool,
-	secrets ...string,
 ) (*response, error) {
+	var secrets []string
 	for attempt := 1; ; attempt++ {
-		req, err := build(ctx)
+		req, carried, err := build(ctx)
 		if err != nil {
 			return nil, err
 		}
+		secrets = append(secrets, carried...)
 		req.Header.Set("User-Agent", t.userAgent)
 		req.Header.Set("Accept", "application/json")
 		tflog.Debug(ctx, "HERE API request", map[string]any{
@@ -259,40 +261,34 @@ func (c *Client) do(ctx context.Context, r request, out any) (*response, error) 
 	op := r.method + " " + r.path
 
 	var token string
-	var usedTokens []string
-	build := func(ctx context.Context) (*http.Request, error) {
+	build := func(ctx context.Context) (*http.Request, []string, error) {
 		tok, err := c.tokens.Token(ctx)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		token = tok
-		usedTokens = append(usedTokens, tok)
 		var body io.Reader
 		if payload != nil {
 			body = bytes.NewReader(payload)
 		}
 		req, err := http.NewRequestWithContext(ctx, r.method, target, body)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 		if payload != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
-		return req, nil
+		return req, []string{tok}, nil
 	}
 
 	resp, err := c.t.send(ctx, op, build, r.idempotent)
 	// token is empty when the token endpoint itself failed; only an API 401 warrants a refresh.
 	if token != "" && HasStatus(err, http.StatusUnauthorized) {
-		c.tokens.Invalidate(token)
+		c.tokens.Invalidate(ctx, token)
 		resp, err = c.t.send(ctx, op, build, r.idempotent)
 	}
 	if err != nil {
-		var apiErr *APIError
-		if errors.As(err, &apiErr) {
-			apiErr.Title = redact(apiErr.Title, usedTokens...)
-		}
 		return nil, err
 	}
 	if out != nil && len(bytes.TrimSpace(resp.body)) > 0 {

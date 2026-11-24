@@ -232,16 +232,21 @@ func TestTooManyRequestsHonoursRetryAfter(t *testing.T) {
 }
 
 func TestRetryAfterBeyondLimitFailsFast(t *testing.T) {
-	c, rec, sleeps := newTestClient(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Retry-After", "3600")
-		writeJSON(w, http.StatusTooManyRequests, `{"title":"Too Many Requests"}`)
-	})
-	_, err := c.GetApp(t.Context(), testAppHRN)
-	if !HasStatus(err, http.StatusTooManyRequests) {
-		t.Fatalf("expected a 429, got %v", err)
-	}
-	if len(rec.Requests()) != 1 || len(sleeps.Durations()) != 0 {
-		t.Fatalf("requests = %d, sleeps = %v", len(rec.Requests()), sleeps.Durations())
+	// Without clamping, the largest values overflow time.Duration into an immediate retry.
+	for _, retryAfter := range []string{"3600", "9223372036854775807", "99999999999999999999", "Fri, 31 Dec 9999 23:59:59 GMT"} {
+		t.Run(retryAfter, func(t *testing.T) {
+			c, rec, sleeps := newTestClient(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Retry-After", retryAfter)
+				writeJSON(w, http.StatusTooManyRequests, `{"title":"Too Many Requests"}`)
+			})
+			_, err := c.GetApp(t.Context(), testAppHRN)
+			if !HasStatus(err, http.StatusTooManyRequests) {
+				t.Fatalf("expected a 429, got %v", err)
+			}
+			if len(rec.Requests()) != 1 || len(sleeps.Durations()) != 0 {
+				t.Fatalf("requests = %d, sleeps = %v", len(rec.Requests()), sleeps.Durations())
+			}
+		})
 	}
 }
 
@@ -400,11 +405,25 @@ func TestErrorParsing(t *testing.T) {
 			notWant: []string{strings.Repeat("x", maxTitleLength+1)},
 		},
 		{
-			name:    "bearer token echoed by the server is redacted",
+			name:    "bearer token echoed in any field is redacted",
 			status:  http.StatusBadRequest,
-			body:    `{"title":"bad token test-token"}`,
-			want:    []string{"bad token [REDACTED]"},
+			body:    `{"title":"bad token test-token","code":"test-token","correlationId":"test-token"}`,
+			want:    []string{"bad token [REDACTED]", "code [REDACTED]", "correlation ID: [REDACTED]"},
 			notWant: []string{"test-token"},
+		},
+		{
+			name:    "secret cut by the truncation is redacted first",
+			status:  http.StatusBadRequest,
+			body:    `{"title":"` + strings.Repeat("x", maxTitleLength-4) + `test-token"}`,
+			want:    []string{strings.Repeat("x", maxTitleLength-4) + "[RED..."},
+			notWant: []string{"test"},
+		},
+		{
+			name:    "JWT echoed by the server is redacted even if this client did not send it",
+			status:  http.StatusBadRequest,
+			body:    `{"title":"token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl expired","correlationId":"eyJhbGciOiJSUzI1NiJ9"}`,
+			want:    []string{"token [REDACTED] expired", "correlation ID: [REDACTED]"},
+			notWant: []string{"eyJ"},
 		},
 	}
 	for _, tt := range tests {
