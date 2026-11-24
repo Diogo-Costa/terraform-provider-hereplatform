@@ -167,6 +167,8 @@ To rotate an API key without an outage:
 
 ## Security
 
+To report a vulnerability, follow [SECURITY.md](SECURITY.md); do not open a public issue.
+
 - **Secrets in state and plans.** `hereplatform_app_api_key.value` holds the plaintext API key. It is
   stored in the state and in saved plan files (`terraform plan -out`), which also hold the values of
   input variables. Treat both as secrets: restrict access to the state backend, and do not keep plan
