@@ -144,9 +144,13 @@ func (p *hereProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 }
 
 func (p *hereProvider) Resources(context.Context) []func() resource.Resource {
-	return []func() resource.Resource{}
+	return []func() resource.Resource{
+		newAppResource,
+	}
 }
 
 func (p *hereProvider) DataSources(context.Context) []func() datasource.DataSource {
-	return []func() datasource.DataSource{}
+	return []func() datasource.DataSource{
+		newAppDataSource,
+	}
 }

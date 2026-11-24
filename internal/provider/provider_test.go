@@ -1,12 +1,34 @@
 package provider
 
 import (
+	"fmt"
+	"os"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	fwprovider "github.com/hashicorp/terraform-plugin-framework/provider"
+	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
+	tfresource "github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
+
+// testAccProtoV6ProviderFactories serves the provider in-process for each Terraform command.
+var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
+	"hereplatform": providerserver.NewProtocol6WithError(New("test")()),
+}
+
+func testAccPreCheck(t *testing.T) {
+	t.Helper()
+	jwt := os.Getenv(envClientID) != "" && os.Getenv(envPrivateKey) != ""
+	accessKey := os.Getenv(envAccessKeyID) != "" && os.Getenv(envAccessKeySecret) != ""
+	if !jwt && !accessKey && os.Getenv(envCredentialsFile) == "" {
+		t.Fatalf("acceptance tests need %s and %s, %s and %s, or %s",
+			envClientID, envPrivateKey, envAccessKeyID, envAccessKeySecret, envCredentialsFile)
+	}
+}
 
 func TestProviderSchemasAreValid(t *testing.T) {
 	ctx := t.Context()
@@ -37,4 +59,37 @@ func TestProviderSchemasAreValid(t *testing.T) {
 			t.Fatalf("%s schema: %v", meta.TypeName, diags)
 		}
 	}
+}
+
+func TestProviderRequiresCredentials(t *testing.T) {
+	noEnv := func(string) string { return "" }
+	tfresource.UnitTest(t, tfresource.TestCase{
+		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
+			"hereplatform": providerserver.NewProtocol6WithError(New("test", WithEnv(noEnv))()),
+		},
+		Steps: []tfresource.TestStep{{
+			Config: `
+provider "hereplatform" {}
+
+data "hereplatform_app" "test" {
+  hrn = "hrn:here:account::example:app/test"
+}
+`,
+			ExpectError: regexp.MustCompile(`Missing HERE credentials`),
+		}},
+	})
+}
+
+// TestAccProviderAuthenticates proves the credentials obtain a token and can list apps,
+// without creating anything.
+func TestAccProviderAuthenticates(t *testing.T) {
+	name := "tfacc-missing-" + acctest.RandString(10)
+	tfresource.Test(t, tfresource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []tfresource.TestStep{{
+			Config:      fmt.Sprintf(`data "hereplatform_app" "test" { name = %q }`, name),
+			ExpectError: regexp.MustCompile(`HERE app not found`),
+		}},
+	})
 }
