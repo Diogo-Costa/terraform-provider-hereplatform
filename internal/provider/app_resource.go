@@ -187,8 +187,15 @@ func (r *appResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		return
 	}
 
-	app, err := r.client.GetApp(ctx, state.ID.ValueString())
+	hrn := state.ID.ValueString()
+	var app *client.App
+	err := readConfirmingNotFound(ctx, r.client, "app "+hrn, func(ctx context.Context) error {
+		var err error
+		app, err = r.client.GetApp(ctx, hrn)
+		return err
+	})
 	if client.IsNotFound(err) {
+		warnRemoved(&resp.Diagnostics, "app "+hrn)
 		resp.State.RemoveResource(ctx)
 		return
 	}

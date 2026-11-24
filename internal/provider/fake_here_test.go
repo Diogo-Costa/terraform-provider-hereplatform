@@ -209,6 +209,24 @@ func (f *fakeHERE) factories() map[string]func() (tfprotov6.ProviderServer, erro
 	}
 }
 
+// client builds an API client as the provider would, for tests that bypass Terraform.
+func (f *fakeHERE) client(t *testing.T, mods ...func(*client.Config)) *client.Client {
+	t.Helper()
+	cfg, diags := resolveConfig(providerModel{}, envOf(f.env()))
+	if diags.HasError() {
+		t.Fatal(diagText(diags))
+	}
+	cfg.Retry, cfg.Poll = fastRetry, fastPoll
+	for _, m := range mods {
+		m(&cfg)
+	}
+	c, err := client.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 func (f *fakeHERE) update(fn func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

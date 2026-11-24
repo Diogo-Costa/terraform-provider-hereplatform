@@ -196,8 +196,15 @@ func (r *appAPIKeyResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	key, err := r.client.GetAPIKey(ctx, state.AppHRN.ValueString(), state.ID.ValueString())
+	appHRN, keyHRN := state.AppHRN.ValueString(), state.ID.ValueString()
+	var key *client.APIKey
+	err := readConfirmingNotFound(ctx, r.client, "API key "+keyHRN, func(ctx context.Context) error {
+		var err error
+		key, err = r.client.GetAPIKey(ctx, appHRN, keyHRN)
+		return err
+	})
 	if client.IsNotFound(err) {
+		warnRemoved(&resp.Diagnostics, "API key "+keyHRN+" of app "+appHRN)
 		resp.State.RemoveResource(ctx)
 		return
 	}

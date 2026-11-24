@@ -166,12 +166,18 @@ func (r *appTrustedDomainsResource) Read(ctx context.Context, req resource.ReadR
 	}
 	appHRN := state.ID.ValueString()
 
-	live, err := r.client.ListTrustedDomains(ctx, appHRN)
+	var live []string
 	var enabled bool
-	if err == nil {
+	err := readConfirmingNotFound(ctx, r.client, "trusted domains of "+appHRN, func(ctx context.Context) error {
+		var err error
+		if live, err = r.client.ListTrustedDomains(ctx, appHRN); err != nil {
+			return err
+		}
 		enabled, err = r.client.TrustedDomainsEnabled(ctx, appHRN)
-	}
+		return err
+	})
 	if client.IsNotFound(err) {
+		warnRemoved(&resp.Diagnostics, "the trusted domains of app "+appHRN)
 		resp.State.RemoveResource(ctx)
 		return
 	}

@@ -35,6 +35,29 @@ func appHRNValidator() validator.String {
 	return stringvalidator.RegexMatches(appHRNPattern, "must be an app HRN like "+appHRNFormat)
 }
 
+// readConfirmingNotFound repeats read once after a short delay when HERE answers 404.
+// IAM reads are eventually consistent: dropping a resource on a stale 404 makes Terraform
+// create a duplicate while the original stays live.
+func readConfirmingNotFound(ctx context.Context, c *client.Client, what string, read func(context.Context) error) error {
+	confirming := true
+	err := c.Retry(ctx, what, func(err error) bool {
+		retry := confirming && client.IsNotFound(err)
+		confirming = false
+		return retry
+	}, read)
+	if err != nil && ctx.Err() != nil {
+		// Interrupted before the second read: not evidence that the object is gone.
+		return ctx.Err()
+	}
+	return err
+}
+
+func warnRemoved(diags *diag.Diagnostics, what string) {
+	diags.AddWarning("Resource removed from state",
+		"HERE answered 404 twice for "+what+", so Terraform removed it from the state and plans to create it "+
+			"again. HERE IAM is eventually consistent: if it still exists, import it instead of applying.")
+}
+
 func clientFromProviderData(data any, diags *diag.Diagnostics) *client.Client {
 	if data == nil {
 		return nil
