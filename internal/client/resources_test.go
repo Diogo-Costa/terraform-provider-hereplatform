@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -175,15 +176,17 @@ func TestTrustedDomainBatches(t *testing.T) {
 	c, rec, _ := newTestClient(t, func(n int, w http.ResponseWriter, _ *http.Request) {
 		if n == 2 {
 			writeJSON(w, http.StatusMultiStatus, `{"items":[{"trustedDomain":"app10.example.com","status":201},`+
-				`{"trustedDomain":"app11.example.com","status":400367}]}`)
+				`{"trustedDomain":"app11.example.com","status":400367},{"trustedDomain":"app12.example.com","status":409000},`+
+				`{"trustedDomain":"app13.example.com","status":404660}]}`)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	err := c.AddTrustedDomains(t.Context(), testAppHRN, domains)
 	var partial *PartialFailureError
-	if !errors.As(err, &partial) || len(partial.Failures) != 1 || partial.Failures[0] != (DomainFailure{"app11.example.com", 400367}) {
-		t.Fatalf("expected one rejected domain, got %v", err)
+	want := []DomainFailure{{"app11.example.com", 400367}, {"app13.example.com", 404660}}
+	if !errors.As(err, &partial) || !slices.Equal(partial.Failures, want) {
+		t.Fatalf("expected %v rejected, got %v", want, err)
 	}
 	if !strings.Contains(err.Error(), `"app11.example.com" (status 400367)`) {
 		t.Fatalf("error does not name the rejected entry: %v", err)

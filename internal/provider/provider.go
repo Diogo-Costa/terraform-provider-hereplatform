@@ -147,6 +147,7 @@ func (p *hereProvider) Resources(context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		newAppResource,
 		newAppAPIKeyResource,
+		newAppTrustedDomainsResource,
 	}
 }
 

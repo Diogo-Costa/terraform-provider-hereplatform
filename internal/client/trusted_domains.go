@@ -138,8 +138,13 @@ func domainResultOK(status int, removing bool) bool {
 	if status >= 200 && status < 300 {
 		return true
 	}
-	// HERE codes are the HTTP status followed by three digits (404660, 404xxx).
-	return removing && (status == http.StatusNotFound || status/1000 == http.StatusNotFound)
+	// HERE codes are the HTTP status followed by three digits (404660). Absent entries count
+	// as removed and, as an undocumented assumption, conflicting ones as already added.
+	expected := http.StatusConflict
+	if removing {
+		expected = http.StatusNotFound
+	}
+	return status == expected || status/1000 == expected
 }
 
 // TrustedDomainsEnabled reports whether trusted-domain enforcement is on.
