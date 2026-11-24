@@ -1,0 +1,86 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - copyloopvar
+    - depguard
+    - dupl
+    - durationcheck
+    - errcheck
+    - forcetypeassert
+    - goconst
+    - godot
+    - gosec
+    - govet
+    - ineffassign
+    - makezero
+    - misspell
+    - mnd
+    - nilerr
+    - predeclared
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - usetesting
+    - whitespace
+  settings:
+    depguard:
+      rules:
+        main:
+          list-mode: lax
+          deny:
+            - pkg: "github.com/hashicorp/terraform-plugin-sdk/v2"
+              desc: "Use the Terraform Plugin Framework and terraform-plugin-testing"
+    goconst:
+      # Schema attribute names repeat by design across schemas, models and paths.
+      ignore-string-values:
+        - "^[a-z][a-z0-9_]*$"
+    mnd:
+      ignored-functions:
+        - "^time\\."
+        - "^stringvalidator\\."
+        - "^setvalidator\\."
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - dupl
+          - forcetypeassert
+          - goconst
+          - gosec
+          - mnd
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Diogo-Costa/terraform-provider-hereplatform
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

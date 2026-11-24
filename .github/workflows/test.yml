@@ -1,0 +1,148 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod download
+      - run: go build -v ./...
+      - run: go vet ./...
+      - name: Check that go.mod and go.sum are tidy
+        run: go mod tidy -diff
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+
+  generate:
+    name: Generated docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # terraform fmt formats the examples; tfplugindocs reads the provider schema through Terraform.
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+      - run: go generate ./...
+      - name: Check for uncommitted changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --short
+            git --no-pager diff
+            echo "::error::Generated files are out of date. Run 'make generate' and commit the result."
+            exit 1
+          fi
+
+  test:
+    name: Unit tests
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # terraform-plugin-testing drives the real Terraform CLI, also in unit tests.
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+      - run: go test -race -cover ./...
+
+  acceptance:
+    name: Acceptance tests
+    needs: test
+    # The environment asks for approval before any step runs, so runs on pushes and pull requests
+    # are opt-in through a repository variable. Fork pull requests never receive secrets.
+    if: >-
+      (vars.RUN_ACCEPTANCE_TESTS == 'true' || github.event_name == 'workflow_dispatch') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    environment: acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # One run at a time: the tests create and delete apps in a shared sandbox realm, and the
+    # sweeper deletes every tfacc- app it can see, including those of a concurrent run.
+    concurrency:
+      group: acceptance
+      cancel-in-progress: false
+    env:
+      HAS_HERE_CREDS: ${{ secrets.HERE_CLIENT_ID != '' }}
+    steps:
+      - name: Skip without sandbox credentials
+        if: env.HAS_HERE_CREDS != 'true'
+        run: echo "::notice::Acceptance tests skipped because the acceptance environment has no HERE credentials."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.HAS_HERE_CREDS == 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        if: env.HAS_HERE_CREDS == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        if: env.HAS_HERE_CREDS == 'true'
+        with:
+          terraform_wrapper: false
+      # Secrets go only to the steps that call HERE, never to third-party actions.
+      - name: Run acceptance tests
+        if: env.HAS_HERE_CREDS == 'true'
+        env:
+          TF_ACC: "1"
+          HERE_CLIENT_ID: ${{ secrets.HERE_CLIENT_ID }}
+          HERE_PRIVATE_KEY: ${{ secrets.HERE_PRIVATE_KEY }}
+          HERE_KEY_ID: ${{ secrets.HERE_KEY_ID }}
+        run: go test -v -cover -timeout 50m ./internal/provider/
+      # Deletes what a failed or cancelled run left behind.
+      - name: Sweep tfacc- apps
+        if: always() && env.HAS_HERE_CREDS == 'true'
+        env:
+          HERE_CLIENT_ID: ${{ secrets.HERE_CLIENT_ID }}
+          HERE_PRIVATE_KEY: ${{ secrets.HERE_PRIVATE_KEY }}
+          HERE_KEY_ID: ${{ secrets.HERE_KEY_ID }}
+        run: make sweep
