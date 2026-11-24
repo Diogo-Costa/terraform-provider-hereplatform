@@ -329,7 +329,7 @@ func TestRetryReportsUnconfirmedCreates(t *testing.T) {
 			return
 		}
 		<-r.Context().Done()
-	})
+	}, withHTTPTimeout(200*time.Millisecond))
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 	err := c.Retry(ctx, "a free API key slot", func(err error) bool { return HasCode(err, 409303) }, func(ctx context.Context) error {
@@ -338,6 +338,26 @@ func TestRetryReportsUnconfirmedCreates(t *testing.T) {
 	})
 	if !IsUnconfirmed(err) || len(rec.Requests()) != 2 {
 		t.Fatalf("got %v after %d request(s), want the second create unconfirmed", err, len(rec.Requests()))
+	}
+}
+
+func TestRetryReportsTwoKeyLimitPastDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	c, rec, _ := newTestClient(t, func(n int, w http.ResponseWriter, _ *http.Request) {
+		if n > 1 {
+			<-ctx.Done()
+			time.Sleep(50 * time.Millisecond)
+		}
+		writeJSON(w, http.StatusConflict, twoKeyLimitJSON)
+	}, withHTTPTimeout(5*time.Second))
+	err := c.Retry(ctx, "a free API key slot", func(err error) bool { return HasCode(err, 409303) }, func(ctx context.Context) error {
+		_, err := c.CreateAPIKey(ctx, testAppHRN, CreateAPIKeyInput{Name: "x"})
+		return err
+	})
+	if IsUnconfirmed(err) || !HasCode(err, 409303) || !strings.Contains(err.Error(), "timed out waiting for a free API key slot") ||
+		len(rec.Requests()) != 2 {
+		t.Fatalf("got %v after %d request(s), want the two-key limit once the deadline passed", err, len(rec.Requests()))
 	}
 }
 
@@ -461,6 +481,23 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 	}
 	if _, err := New(allowed); err != nil {
 		t.Fatalf("opt-in rejected: %v", err)
+	}
+}
+
+func TestHTTPClientWithoutTimeoutIsBounded(t *testing.T) {
+	static := StaticTokenSource("x")
+	unbounded := &http.Client{Transport: http.DefaultTransport}
+	c, err := New(Config{TokenSource: static, HTTPClient: unbounded})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.t.http; got == unbounded || got.Timeout != defaultHTTPTimeout || got.Transport != unbounded.Transport ||
+		unbounded.Timeout != 0 {
+		t.Fatalf("got a client with timeout %v, want a copy of the caller's bounded by the default", got.Timeout)
+	}
+	bounded := &http.Client{Timeout: time.Second}
+	if c, err = New(Config{TokenSource: static, HTTPClient: bounded}); err != nil || c.t.http != bounded {
+		t.Fatalf("a client with its own timeout must be used as is (err %v)", err)
 	}
 }
 

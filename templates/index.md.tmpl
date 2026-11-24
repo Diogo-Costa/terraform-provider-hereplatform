@@ -59,9 +59,12 @@ writes, so every run installs the same checksum-verified build.
 * An app can have at most two API keys.
 * Trusted domain changes can take up to 30 minutes to be enforced. While enforcement is off, HERE
   accepts the app's API keys from any origin.
-* HERE may apply a create whose response is lost, for example on a timeout or a server error. The
-  provider does not retry such a create and fails instead: check HERE, and import the object if it
-  exists or apply again if it does not.
+* A request that creates an app or an API key runs to completion once sent, for up to the 60-second
+  HTTP timeout, even when `timeouts.create` expires or Terraform is interrupted, so HERE's answer is
+  never lost. An apply can therefore exceed `timeouts.create` by up to that much.
+* HERE may apply a create whose response is lost: on a dropped connection, a server error or the
+  HTTP timeout. The provider does not retry such a create and fails instead: check HERE, and import
+  the object if it exists or apply again if it does not.
 
 ## Deletion protection
 

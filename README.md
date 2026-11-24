@@ -133,10 +133,14 @@ configuration: otherwise the next apply turns its app creation off.
   entries of the app that are not in `domains`. While enforcement is off, after `enabled = false` or
   once the resource is deleted, HERE accepts the app's API keys from any origin; plans that turn it
   off show a warning.
-- **Unconfirmed creates.** HERE may apply a create whose response is lost, for example on a timeout
-  or a server error. The provider does not retry such a create, which could make a second app or
-  take the last of an app's two key slots, and fails instead: check HERE, and import the object if
-  it exists or apply again if it does not.
+- **Creates in flight.** A request that creates an app or an API key runs to completion once sent,
+  for up to the 60-second HTTP timeout, even when `timeouts.create` expires or Terraform is
+  interrupted, so HERE's answer is never lost. An apply can therefore exceed `timeouts.create` by up
+  to that much.
+- **Unconfirmed creates.** HERE may apply a create whose response is lost: on a dropped connection, a
+  server error or the HTTP timeout. The provider does not retry such a create, which could make a
+  second app or take the last of an app's two key slots, and fails instead: check HERE, and import
+  the object if it exists or apply again if it does not.
 
 ## Deletion protection
 

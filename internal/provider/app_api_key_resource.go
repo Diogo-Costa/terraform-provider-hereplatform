@@ -116,7 +116,9 @@ func (r *appAPIKeyResource) Schema(ctx context.Context, _ resource.SchemaRequest
 				Computed:            true,
 				PlanModifiers:       stable,
 			},
-			"timeouts": timeouts.Attributes(ctx, timeouts.Opts{Create: true, Update: true, Delete: true}),
+			"timeouts": timeouts.Attributes(ctx, timeouts.Opts{
+				Create: true, Update: true, Delete: true, CreateDescription: descCreateTimeout,
+			}),
 		},
 	}
 }
