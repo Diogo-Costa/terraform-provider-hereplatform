@@ -1,0 +1,39 @@
+# Provider binaries
+terraform-provider-hereplatform
+terraform-provider-hereplatform_*
+bin/
+dist/
+
+# Terraform working files
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Credentials never belong in the repository
+credentials.properties
+*.pem
+*.key
+.env
+.env.*
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Editors and OS
+.idea/
+.vscode/
+*.iml
+*.swp
+*~
+.DS_Store
