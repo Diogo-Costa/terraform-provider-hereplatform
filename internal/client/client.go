@@ -30,11 +30,13 @@ const (
 
 	logKeyOperation = "operation"
 
+	// Bounds how long a create in flight can outlive its caller; the docs state its value.
 	defaultHTTPTimeout = 60 * time.Second
 	maxResponseBytes   = 8 << 20
 )
 
-// Config configures a Client. Zero values select production defaults.
+// Config configures a Client. Zero values select production defaults, HTTPClient's Timeout
+// included.
 type Config struct {
 	APIURL   string
 	TokenURL string
@@ -77,12 +79,18 @@ func New(cfg Config) (*Client, error) {
 		now:       cfg.Now,
 		sleep:     cfg.Sleep,
 	}
-	if t.http == nil {
+	switch {
+	case t.http == nil:
 		t.http = &http.Client{
 			Timeout: defaultHTTPTimeout,
 			// Never forward bearer tokens or signed requests to another location.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
+	case t.http.Timeout <= 0:
+		// The timeout alone bounds a create in flight, which ignores cancellation.
+		bounded := *t.http
+		bounded.Timeout = defaultHTTPTimeout
+		t.http = &bounded
 	}
 	if t.now == nil {
 		t.now = time.Now
@@ -163,6 +171,11 @@ type transport struct {
 // send runs build once per attempt so each retry carries fresh signatures and tokens;
 // build also returns the credentials in the request, which errors must never echo.
 // Bodies are never logged: they can contain tokens, assertions or API key values.
+//
+// A non-idempotent request runs detached from ctx once sent, bounded by the HTTP client
+// timeout: cut at the caller's deadline, a definite answer such as 409303 would turn into
+// an unconfirmed create. Token requests, signing and backoff waits stay cancellable:
+// abandoning them leaves no create in doubt.
 func (t *transport) send(
 	ctx context.Context,
 	op string,
@@ -175,6 +188,10 @@ func (t *transport) send(
 		if err != nil {
 			return nil, err
 		}
+		// Nothing is sent once ctx ends; Do would still send a detached request.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("%s: %w", op, ctxErr)
+		}
 		secrets = append(secrets, carried...)
 		req.Header.Set("User-Agent", t.userAgent)
 		req.Header.Set("Accept", "application/json")
@@ -182,9 +199,13 @@ func (t *transport) send(
 			logKeyOperation: op, "method": req.Method, "path": req.URL.EscapedPath(), "attempt": attempt,
 		})
 
+		reqCtx := req.Context()
+		if !idempotent {
+			reqCtx = context.WithoutCancel(reqCtx)
+		}
 		// A create that fails after its headers were written may still have been applied.
 		var written atomic.Bool
-		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+		req = req.WithContext(httptrace.WithClientTrace(reqCtx, &httptrace.ClientTrace{
 			WroteHeaders: func() { written.Store(true) },
 		}))
 		httpResp, err := t.http.Do(req)
@@ -193,7 +214,8 @@ func (t *transport) send(
 			resp, err = readResponse(httpResp)
 		}
 		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
+			// A detached request failed on its own, not because ctx ended.
+			if ctxErr := ctx.Err(); ctxErr != nil && idempotent {
 				err = fmt.Errorf("%s: %w", op, ctxErr)
 			} else if attempt < t.retry.MaxAttempts && isRetryableNetError(err, idempotent) {
 				wait := expBackoff(attempt, t.retry.MinBackoff, t.retry.MaxBackoff)

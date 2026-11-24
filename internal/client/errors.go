@@ -131,7 +131,8 @@ func truncate(s string, n int) string {
 }
 
 // UnconfirmedError reports a create that reached HERE without a definite answer: a server
-// failure, a lost connection, a timeout or an unreadable response. HERE may have applied it.
+// failure, a lost connection, the HTTP client timeout or an unreadable response. HERE may
+// have applied it.
 type UnconfirmedError struct {
 	Err error
 }

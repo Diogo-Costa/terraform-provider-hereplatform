@@ -106,6 +106,13 @@ func writeJSON(w http.ResponseWriter, status int, body string) {
 const appJSON = `{"hrn":"hrn:here:account::realm1:app/abc123","clientId":"abc123","name":"demo","description":"d",` +
 	`"realm":"realm1","status":"ACTIVE","appCreationEnabled":false,"createdTime":1700000000000}`
 
+const twoKeyLimitJSON = `{"errorId":"x","httpStatus":409,"errorCode":409303,"message":"Reached allowed maximum number of active API keys"}`
+
+// withHTTPTimeout sets the only bound of a create in flight, which outlives its context.
+func withHTTPTimeout(d time.Duration) func(*Config) {
+	return func(cfg *Config) { cfg.HTTPClient.Timeout = d }
+}
+
 func TestHRNPathParametersStayEncoded(t *testing.T) {
 	c, rec, _ := newTestClient(t, func(_ int, w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -403,18 +410,136 @@ func TestUnconfirmedCreates(t *testing.T) {
 }
 
 func TestCreateTimeoutAfterSendIsUnconfirmed(t *testing.T) {
-	c, rec, _ := newTestClient(t, func(_ int, _ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	const httpTimeout = 200 * time.Millisecond
+	c, rec, _ := newTestClient(t, func(_ int, _ http.ResponseWriter, r *http.Request) { <-r.Context().Done() },
+		withHTTPTimeout(httpTimeout))
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
+	start := time.Now()
 	_, err := c.CreateApp(ctx, CreateAppInput{Name: "x"})
-	if !IsUnconfirmed(err) || !errors.Is(err, context.DeadlineExceeded) || len(rec.Requests()) != 1 {
-		t.Fatalf("got %v after %d request(s), want an unconfirmed deadline error after 1", err, len(rec.Requests()))
+	var netErr net.Error
+	if !IsUnconfirmed(err) || !errors.As(err, &netErr) || !netErr.Timeout() || len(rec.Requests()) != 1 {
+		t.Fatalf("got %v after %d request(s), want an unconfirmed HTTP timeout after 1", err, len(rec.Requests()))
+	}
+	if elapsed := time.Since(start); elapsed < httpTimeout {
+		t.Fatalf("gave up after %v; a create in flight must outlive its caller's deadline", elapsed)
 	}
 
 	ctx, cancel = context.WithCancel(t.Context())
 	cancel()
 	if _, err := c.CreateApp(ctx, CreateAppInput{Name: "x"}); err == nil || IsUnconfirmed(err) {
 		t.Fatalf("a create cancelled before it was sent must fail definitely, got %v", err)
+	}
+}
+
+func TestCreateInFlightOutlivesDeadline(t *testing.T) {
+	createApp := func(ctx context.Context, c *Client) error {
+		_, err := c.CreateApp(ctx, CreateAppInput{Name: "x"})
+		return err
+	}
+	createKey := func(ctx context.Context, c *Client) error {
+		_, err := c.CreateAPIKey(ctx, testAppHRN, CreateAPIKeyInput{Name: "x"})
+		return err
+	}
+	reply := func(status int, body string) func(http.ResponseWriter) {
+		return func(w http.ResponseWriter) { writeJSON(w, status, body) }
+	}
+	tests := []struct {
+		name   string
+		call   func(context.Context, *Client) error
+		answer func(http.ResponseWriter)
+		want   func(error) bool
+	}{
+		{"created", createApp, reply(http.StatusOK, appJSON), func(err error) bool { return err == nil }},
+		{"two-key limit", createKey, reply(http.StatusConflict, twoKeyLimitJSON), func(err error) bool {
+			return HasCode(err, 409303) && !IsUnconfirmed(err)
+		}},
+		// The Retry-After wait is cut by the deadline: nothing is replayed.
+		{"throttled", createKey, reply(http.StatusTooManyRequests, `{}`), func(err error) bool {
+			return HasStatus(err, http.StatusTooManyRequests) && !IsUnconfirmed(err)
+		}},
+		{"server failure", createApp, reply(http.StatusServiceUnavailable, `{}`), func(err error) bool {
+			return HasStatus(err, http.StatusServiceUnavailable) && IsUnconfirmed(err)
+		}},
+		{"connection lost", createApp, func(w http.ResponseWriter) {
+			if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+				_ = conn.Close()
+			}
+		}, IsUnconfirmed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+			defer cancel()
+			c, rec, _ := newTestClient(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
+				<-ctx.Done()
+				time.Sleep(50 * time.Millisecond)
+				tt.answer(w)
+			}, withHTTPTimeout(5*time.Second))
+			err := tt.call(ctx, c)
+			// HERE's answer, or the transport's own error, never the caller's deadline.
+			if !tt.want(err) || errors.Is(err, context.DeadlineExceeded) || len(rec.Requests()) != 1 {
+				t.Fatalf("got %v after %d request(s)", err, len(rec.Requests()))
+			}
+		})
+	}
+}
+
+func TestCreateInFlightSurvivesInterrupt(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	c, rec, _ := newTestClient(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
+		cancel()
+		time.Sleep(50 * time.Millisecond)
+		writeJSON(w, http.StatusOK, appJSON)
+	}, withHTTPTimeout(5*time.Second))
+	app, err := c.CreateApp(ctx, CreateAppInput{Name: "x"})
+	if err != nil || app.HRN != testAppHRN || len(rec.Requests()) != 1 {
+		t.Fatalf("got %+v, %v after %d request(s), want the app created before the interrupt", app, err, len(rec.Requests()))
+	}
+}
+
+func TestReadIsCutByDeadline(t *testing.T) {
+	c, rec, _ := newTestClient(t, func(_ int, _ http.ResponseWriter, r *http.Request) { <-r.Context().Done() },
+		withHTTPTimeout(5*time.Second))
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := c.GetApp(ctx, testAppHRN)
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) || IsUnconfirmed(err) || len(rec.Requests()) != 1 || elapsed > time.Second {
+		t.Fatalf("got %v after %v and %d request(s), want the GET cut at its deadline", err, elapsed, len(rec.Requests()))
+	}
+}
+
+// cancelingTokenSource ends the caller's context while a token is fetched, as an interrupt can.
+type cancelingTokenSource struct{ cancel context.CancelFunc }
+
+func (s cancelingTokenSource) Token(context.Context) (string, error) {
+	s.cancel()
+	return "test-token", nil
+}
+
+func (cancelingTokenSource) Invalidate(context.Context, string) {}
+
+func TestCancelledCreateIsNotSent(t *testing.T) {
+	for name, cancelOnToken := range map[string]bool{"before the call": false, "while fetching a token": true} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var tokens TokenSource = cancelingTokenSource{cancel}
+			if !cancelOnToken {
+				cancel()
+				tokens = StaticTokenSource("test-token")
+			}
+			c, rec, _ := newTestClient(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
+				writeJSON(w, http.StatusOK, appJSON)
+			}, func(cfg *Config) { cfg.TokenSource = tokens })
+			_, err := c.CreateApp(ctx, CreateAppInput{Name: "x"})
+			if !errors.Is(err, context.Canceled) || IsUnconfirmed(err) || len(rec.Requests()) != 0 {
+				t.Fatalf("got %v after %d request(s), want a definite cancellation and none sent", err, len(rec.Requests()))
+			}
+		})
 	}
 }
 
