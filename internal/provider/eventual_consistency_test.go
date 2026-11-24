@@ -14,7 +14,7 @@ import (
 func newStackConfig() string {
 	return appConfig("tfacc-stack", unprotected) +
 		keyBlock("test", appRef("test"), `name = "primary"`) +
-		domainsBlock("test", appRef("test"), []string{"a.example.com"}, domainTimeouts)
+		domainsBlock(appRef("test"), []string{"a.example.com"}, domainTimeouts)
 }
 
 func forbidden() fakeReply { return hereError(http.StatusForbidden, "403300", "Forbidden") }

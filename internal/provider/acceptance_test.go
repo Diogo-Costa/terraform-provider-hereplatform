@@ -217,8 +217,8 @@ func TestAccAPIKeyLifecycle(t *testing.T) {
 			ImportState:             true,
 			ImportStateIdFunc:       keyImportID,
 			ImportStateVerify:       true,
-			ImportStateVerifyIgnore: []string{"value"},
-			ImportStateCheck:        checkImportedKeyValueMatches(&value),
+			ImportStateVerifyIgnore: []string{"value", attrDeletionProtection},
+			ImportStateCheck:        importChecks(checkImportedKeyValueMatches(&value), checkImportedProtected),
 		},
 	))
 }
@@ -240,7 +240,7 @@ func TestAccTrustedDomainsLifecycle(t *testing.T) {
 	name := testAccAppName()
 	app := appConfig(name, unprotected)
 	config := func(domains []string, attrs ...string) string {
-		return app + domainsBlock("test", appRef("test"), domains, attrs...)
+		return app + domainsBlock(appRef("test"), domains, attrs...)
 	}
 	one := []string{"https://" + name + ".example.com"}
 	// More than one batch of ten.
@@ -268,7 +268,8 @@ func TestAccTrustedDomainsLifecycle(t *testing.T) {
 			ResourceName:            domainsAddr,
 			ImportState:             true,
 			ImportStateVerify:       true,
-			ImportStateVerifyIgnore: []string{"timeouts"},
+			ImportStateVerifyIgnore: []string{"timeouts", attrDeletionProtection},
+			ImportStateCheck:        checkImportedProtected,
 		},
 		tfresource.TestStep{
 			Config: config(one),

@@ -4,14 +4,14 @@ page_title: "hereplatform_app_api_key Resource - HERE platform"
 subcategory: ""
 description: |-
   Manages an API key of a HERE platform app.
-  HERE allows at most two API keys per app. The plaintext key is stored in the Terraform state as the sensitive value attribute, so protect the state accordingly. Deleting a key is permanent.
+  HERE allows at most two API keys per app. The plaintext key is stored in the Terraform state as the sensitive value attribute, so protect the state accordingly. Deleting a key is permanent, so deletion_protection is on by default.
 ---
 
 # hereplatform_app_api_key (Resource)
 
 Manages an API key of a HERE platform app.
 
-HERE allows at most two API keys per app. The plaintext key is stored in the Terraform state as the sensitive `value` attribute, so protect the state accordingly. Deleting a key is permanent.
+HERE allows at most two API keys per app. The plaintext key is stored in the Terraform state as the sensitive `value` attribute, so protect the state accordingly. Deleting a key is permanent, so `deletion_protection` is on by default.
 
 ## Example Usage
 
@@ -43,6 +43,7 @@ output "example_api_key" {
 
 ### Optional
 
+- `deletion_protection` (Boolean) Provider-side guard against deleting the key. While `true`, a plan that destroys or replaces the key fails (Terraform 1.3 or later), and so does any apply that would delete it, such as the replacement of a tainted key. Defaults to `true`, also after import. To rotate a key without an outage, add a second `hereplatform_app_api_key` (HERE allows two per app), switch the clients to it, set `deletion_protection = false` on the old key and apply, and then remove the old key.
 - `enabled` (Boolean) Whether the key can authenticate requests. Defaults to `true`.
 - `expires_at` (String) Expiry as an RFC 3339 timestamp, such as `2030-01-02T15:04:05Z`, kept at millisecond precision. Omit it for a key that never expires. Updated in place.
 - `timeouts` (Attributes) (see [below for nested schema](#nestedatt--timeouts))

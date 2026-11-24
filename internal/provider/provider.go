@@ -119,6 +119,12 @@ func (p *hereProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp 
 }
 
 func (p *hereProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
+	if !guardsDestroyPlans(req.TerraformVersion) {
+		resp.Diagnostics.AddWarning("deletion_protection is not checked at plan time",
+			"Terraform "+req.TerraformVersion+" does not plan destroys through providers, so the provider can enforce "+
+				"deletion_protection only when a delete runs: a destroy may delete unprotected API keys and trusted "+
+				"domains before it reaches a protected app. Use Terraform 1.3 or later.")
+	}
 	var model providerModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &model)...)
 	if resp.Diagnostics.HasError() {

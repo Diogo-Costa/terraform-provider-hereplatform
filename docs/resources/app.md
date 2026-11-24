@@ -44,8 +44,8 @@ resource "hereplatform_app" "scratch" {
 
 ### Optional
 
-- `app_creation_enabled` (Boolean) Whether the app may create other apps. Requires `manage` permission on the app. Defaults to `false`.
-- `deletion_protection` (Boolean) Provider-side guard: while `true`, destroying or replacing the app fails. Set it to `false` and apply before deleting the app. Defaults to `true`.
+- `app_creation_enabled` (Boolean) Whether the app may create other apps. Requires `manage` permission on the app. Defaults to `false`. When you import an app that creates apps, such as the app the provider authenticates as, set it to `true`: otherwise the next apply turns app creation off.
+- `deletion_protection` (Boolean) Provider-side guard against deleting the app. While `true`, a plan that destroys the app fails (Terraform 1.3 or later), and so does any apply that would delete it, such as the replacement of a tainted app. Set it to `false` and apply before deleting the app. HERE has no such setting. Defaults to `true`.
 - `description` (String) Free-text description.
 - `timeouts` (Attributes) (see [below for nested schema](#nestedatt--timeouts))
 

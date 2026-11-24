@@ -394,8 +394,8 @@ func TestAPIKeyResourceImport(t *testing.T) {
 				},
 				// HERE returns the plaintext key on GET; it is compared without printing it.
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"value"},
-				ImportStateCheck:        checkImportedKeyValue(f),
+				ImportStateVerifyIgnore: []string{"value", attrDeletionProtection},
+				ImportStateCheck:        importChecks(checkImportedKeyValue(f), checkImportedProtected),
 			},
 			{
 				ResourceName: keyAddr,

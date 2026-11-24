@@ -26,6 +26,7 @@ const defaultAppTimeout = 5 * time.Minute
 var (
 	_ resource.ResourceWithConfigure   = (*appResource)(nil)
 	_ resource.ResourceWithImportState = (*appResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*appResource)(nil)
 )
 
 func newAppResource() resource.Resource { return &appResource{} }
@@ -81,14 +82,17 @@ func (r *appResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp
 			},
 			"app_creation_enabled": schema.BoolAttribute{
 				MarkdownDescription: "Whether the app may create other apps. Requires `manage` permission on the app. " +
-					"Defaults to `false`.",
+					"Defaults to `false`. When you import an app that creates apps, such as the app the provider " +
+					"authenticates as, set it to `true`: otherwise the next apply turns app creation off.",
 				Optional: true,
 				Computed: true,
 				Default:  booldefault.StaticBool(false),
 			},
 			"deletion_protection": schema.BoolAttribute{
-				MarkdownDescription: "Provider-side guard: while `true`, destroying or replacing the app fails. Set it to " +
-					"`false` and apply before deleting the app. Defaults to `true`.",
+				MarkdownDescription: "Provider-side guard against deleting the app. While `true`, a plan that destroys " +
+					"the app fails (Terraform 1.3 or later), and so does any apply that would delete it, such as the " +
+					"replacement of a tainted app. Set it to `false` and apply before deleting the app. HERE has no " +
+					"such setting. Defaults to `true`.",
 				Optional: true,
 				Computed: true,
 				Default:  booldefault.StaticBool(true),
@@ -175,9 +179,27 @@ func (r *appResource) Create(ctx context.Context, req resource.CreateRequest, re
 
 func addCreatedAppError(diags *diag.Diagnostics, hrn, what string, err error) {
 	diags.AddError("HERE app created with errors",
-		fmt.Sprintf("App %s was created, but %s: %s\n\nTerraform marks the app as tainted. Because replacing it "+
-			"would delete it permanently, run `terraform untaint` on this resource and apply again; raise "+
-			"timeouts.create if IAM is slow to converge.", hrn, what, err))
+		fmt.Sprintf("App %s was created, but %s: %s\n\nTerraform marks the app as tainted, and replacing it "+
+			"would delete it permanently: run terraform untaint on this resource and apply again. While "+
+			"deletion_protection is true, the provider refuses that replacement. Raise timeouts.create if IAM is "+
+			"slow to converge.", hrn, what, err))
+}
+
+func guardedApp(hrn string) guarded {
+	return guarded{what: "app " + hrn, consequence: "Deleting a HERE app is permanent and revokes all of its credentials."}
+}
+
+// ModifyPlan fails the destroy plan of a protected app, before Terraform deletes the keys
+// and trusted domains that depend on it. Replacements reach the provider as creates; Delete
+// stops those.
+func (r *appResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.State.Raw.IsNull() || !req.Plan.Raw.IsNull() {
+		return
+	}
+	id := stringAttr(ctx, req.State.GetAttribute, "id", &resp.Diagnostics)
+	if priorProtected(ctx, req.State, &resp.Diagnostics) {
+		guardedApp(id.ValueString()).addDestroyError(&resp.Diagnostics)
+	}
 }
 
 func (r *appResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -207,9 +229,7 @@ func (r *appResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	state.Name = types.StringValue(app.Name)
 	state.Description = stringOrNull(app.Description)
 	state.AppCreationEnabled = types.BoolValue(app.AppCreationEnabled)
-	if state.DeletionProtection.IsNull() {
-		state.DeletionProtection = types.BoolValue(true)
-	}
+	state.DeletionProtection = types.BoolValue(isProtected(state.DeletionProtection))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -267,11 +287,8 @@ func (r *appResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if state.DeletionProtection.IsNull() || state.DeletionProtection.ValueBool() {
-		resp.Diagnostics.AddError("Deletion protection is enabled",
-			fmt.Sprintf("App %s has deletion_protection = true. Deleting a HERE app is permanent and revokes all "+
-				"of its credentials. To delete it, set deletion_protection = false, apply, then destroy.",
-				state.ID.ValueString()))
+	if isProtected(state.DeletionProtection) {
+		guardedApp(state.ID.ValueString()).addDeleteError(&resp.Diagnostics)
 		return
 	}
 	timeout, diags := state.Timeouts.Delete(ctx, defaultAppTimeout)

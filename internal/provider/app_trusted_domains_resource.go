@@ -42,6 +42,7 @@ var trustedDomainPattern = regexp.MustCompile(`^(?:[A-Za-z][A-Za-z0-9+.-]*://)?`
 var (
 	_ resource.ResourceWithConfigure      = (*appTrustedDomainsResource)(nil)
 	_ resource.ResourceWithImportState    = (*appTrustedDomainsResource)(nil)
+	_ resource.ResourceWithModifyPlan     = (*appTrustedDomainsResource)(nil)
 	_ resource.ResourceWithValidateConfig = (*appTrustedDomainsResource)(nil)
 )
 
@@ -52,11 +53,12 @@ type appTrustedDomainsResource struct {
 }
 
 type trustedDomainsModel struct {
-	ID       types.String   `tfsdk:"id"`
-	AppHRN   types.String   `tfsdk:"app_hrn"`
-	Domains  types.Set      `tfsdk:"domains"`
-	Enabled  types.Bool     `tfsdk:"enabled"`
-	Timeouts timeouts.Value `tfsdk:"timeouts"`
+	ID                 types.String   `tfsdk:"id"`
+	AppHRN             types.String   `tfsdk:"app_hrn"`
+	Domains            types.Set      `tfsdk:"domains"`
+	Enabled            types.Bool     `tfsdk:"enabled"`
+	DeletionProtection types.Bool     `tfsdk:"deletion_protection"`
+	Timeouts           timeouts.Value `tfsdk:"timeouts"`
 }
 
 func (r *appTrustedDomainsResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -67,7 +69,9 @@ func (r *appTrustedDomainsResource) Schema(ctx context.Context, _ resource.Schem
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Manages the trusted domains of a HERE platform app: the referrers allowed to use its API keys.\n\n" +
 			"This resource is authoritative: it owns the complete list, and removes entries of the app that are not in " +
-			"`domains`. Declare at most one per app. HERE can take up to 30 minutes to enforce a change.",
+			"`domains`. Declare at most one per app. HERE can take up to 30 minutes to enforce a change.\n\n" +
+			"Deleting the resource turns enforcement off, which lets the app's API keys be used from any origin, so " +
+			"`deletion_protection` is on by default.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: descAppHRN,
@@ -96,10 +100,19 @@ func (r *appTrustedDomainsResource) Schema(ctx context.Context, _ resource.Schem
 				},
 			},
 			"enabled": schema.BoolAttribute{
-				MarkdownDescription: "Whether HERE enforces the list. Defaults to `true`.",
-				Optional:            true,
-				Computed:            true,
-				Default:             booldefault.StaticBool(true),
+				MarkdownDescription: "Whether HERE enforces the list. While enforcement is off, HERE accepts the app's " +
+					"API keys from any origin, and plans that turn it off show a warning. Defaults to `true`.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(true),
+			},
+			"deletion_protection": schema.BoolAttribute{
+				MarkdownDescription: "Provider-side guard against deleting the resource. While `true`, a plan that destroys " +
+					"or replaces it fails (Terraform 1.3 or later), and so does any apply that would delete it, such as " +
+					"the replacement of a tainted resource. Defaults to `true`, also after import.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(true),
 			},
 			"timeouts": timeouts.Attributes(ctx, timeouts.Opts{Create: true, Update: true, Delete: true}),
 		},
@@ -130,6 +143,56 @@ func (r *appTrustedDomainsResource) ValidateConfig(ctx context.Context, req reso
 			continue
 		}
 		seen[domainKey(d)] = d
+	}
+}
+
+func guardedDomains(appHRN string) guarded {
+	return guarded{
+		what: "the trusted domain configuration of app " + appHRN,
+		consequence: "Deleting it removes the managed domains and turns enforcement off, which lets the app's API keys " +
+			"be used from any origin.",
+	}
+}
+
+const failOpenSummary = "Trusted domain enforcement turns off"
+
+// ModifyPlan fails plans that destroy or replace a protected configuration, and warns when
+// a plan stops enforcement: HERE then accepts the app's API keys from any origin.
+func (r *appTrustedDomainsResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.State.Raw.IsNull() {
+		return
+	}
+	appHRN := stringAttr(ctx, req.State.GetAttribute, "id", &resp.Diagnostics).ValueString()
+	priorApp := stringAttr(ctx, req.State.GetAttribute, "app_hrn", &resp.Diagnostics)
+	var priorEnabled, plannedEnabled types.Bool
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("enabled"), &priorEnabled)...)
+
+	destroy := req.Plan.Raw.IsNull()
+	var plannedApp types.String
+	if !destroy {
+		plannedApp = stringAttr(ctx, req.Plan.GetAttribute, "app_hrn", &resp.Diagnostics)
+		resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("enabled"), &plannedEnabled)...)
+	}
+	replace := !destroy && !plannedApp.Equal(priorApp)
+	if (destroy || replace) && priorProtected(ctx, req.State, &resp.Diagnostics) {
+		if destroy {
+			guardedDomains(appHRN).addDestroyError(&resp.Diagnostics)
+		} else {
+			guardedDomains(appHRN).addReplaceError(&resp.Diagnostics, plannedApp)
+		}
+		return
+	}
+
+	if !priorEnabled.ValueBool() {
+		return
+	}
+	switch {
+	case destroy || replace:
+		resp.Diagnostics.AddWarning(failOpenSummary, fmt.Sprintf("This plan deletes the trusted domain configuration "+
+			"of app %s, which turns its enforcement off: HERE then accepts the app's API keys from any origin.", appHRN))
+	case !plannedEnabled.IsUnknown() && !plannedEnabled.ValueBool():
+		resp.Diagnostics.AddWarning(failOpenSummary, fmt.Sprintf("This plan sets enabled = false for the trusted "+
+			"domains of app %s. While enforcement is off, HERE accepts the app's API keys from any origin.", appHRN))
 	}
 }
 
@@ -191,6 +254,7 @@ func (r *appTrustedDomainsResource) Read(ctx context.Context, req resource.ReadR
 	state.Domains = set
 	state.Enabled = types.BoolValue(enabled)
 	state.AppHRN = types.StringValue(appHRN)
+	state.DeletionProtection = types.BoolValue(isProtected(state.DeletionProtection))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -207,9 +271,13 @@ func (r *appTrustedDomainsResource) Update(ctx context.Context, req resource.Upd
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// On failure keep the prior state; the next refresh reads what actually changed.
+	// On failure keep the prior state, except for the provider-side attributes; the next
+	// refresh reads what actually changed.
+	unchanged := plan.Domains.Equal(state.Domains) && plan.Enabled.Equal(state.Enabled)
+	state.DeletionProtection = plan.DeletionProtection
+	state.Timeouts = plan.Timeouts
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
+	if resp.Diagnostics.HasError() || unchanged {
 		return
 	}
 	if err := r.apply(ctx, state.ID.ValueString(), domains, plan.Enabled.ValueBool(), throttled); err != nil {
@@ -223,6 +291,13 @@ func (r *appTrustedDomainsResource) Update(ctx context.Context, req resource.Upd
 func (r *appTrustedDomainsResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state trustedDomainsModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if isProtected(state.DeletionProtection) {
+		guardedDomains(state.ID.ValueString()).addDeleteError(&resp.Diagnostics)
+		return
+	}
 	timeout, diags := state.Timeouts.Delete(ctx, defaultTrustedDomainsTimeout)
 	resp.Diagnostics.Append(diags...)
 	domains := setStrings(ctx, state.Domains, &resp.Diagnostics)
@@ -252,6 +327,7 @@ func (r *appTrustedDomainsResource) ImportState(ctx context.Context, req resourc
 	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("app_hrn"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root(attrDeletionProtection), true)...)
 }
 
 // apply converges the live configuration on the target. Disabling happens before the list

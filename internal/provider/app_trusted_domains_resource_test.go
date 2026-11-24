@@ -24,7 +24,7 @@ const domainsAddr = "hereplatform_app_trusted_domains.test"
 var domainTimeouts = timeoutsAttr("create", "5s", "update", "5s", "delete", "5s")
 
 func domainsConfig(appHRN string, domains []string, attrs ...string) string {
-	return domainsBlock("test", strconv.Quote(appHRN), domains, attrs...)
+	return domainsBlock(strconv.Quote(appHRN), domains, attrs...)
 }
 
 func expectDomains(domains ...string) statecheck.StateCheck {
@@ -482,7 +482,8 @@ func TestTrustedDomainsResourceImport(t *testing.T) {
 				ResourceName:            domainsAddr,
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"timeouts"},
+				ImportStateVerifyIgnore: []string{"timeouts", attrDeletionProtection},
+				ImportStateCheck:        checkImportedProtected,
 			},
 			{
 				ResourceName:  domainsAddr,

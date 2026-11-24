@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   Manages the trusted domains of a HERE platform app: the referrers allowed to use its API keys.
   This resource is authoritative: it owns the complete list, and removes entries of the app that are not in domains. Declare at most one per app. HERE can take up to 30 minutes to enforce a change.
+  Deleting the resource turns enforcement off, which lets the app's API keys be used from any origin, so deletion_protection is on by default.
 ---
 
 # hereplatform_app_trusted_domains (Resource)
@@ -12,6 +13,8 @@ description: |-
 Manages the trusted domains of a HERE platform app: the referrers allowed to use its API keys.
 
 This resource is authoritative: it owns the complete list, and removes entries of the app that are not in `domains`. Declare at most one per app. HERE can take up to 30 minutes to enforce a change.
+
+Deleting the resource turns enforcement off, which lets the app's API keys be used from any origin, so `deletion_protection` is on by default.
 
 ## Example Usage
 
@@ -42,7 +45,8 @@ resource "hereplatform_app_trusted_domains" "example" {
 
 ### Optional
 
-- `enabled` (Boolean) Whether HERE enforces the list. Defaults to `true`.
+- `deletion_protection` (Boolean) Provider-side guard against deleting the resource. While `true`, a plan that destroys or replaces it fails (Terraform 1.3 or later), and so does any apply that would delete it, such as the replacement of a tainted resource. Defaults to `true`, also after import.
+- `enabled` (Boolean) Whether HERE enforces the list. While enforcement is off, HERE accepts the app's API keys from any origin, and plans that turn it off show a warning. Defaults to `true`.
 - `timeouts` (Attributes) (see [below for nested schema](#nestedatt--timeouts))
 
 ### Read-Only

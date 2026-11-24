@@ -29,6 +29,7 @@ const (
 var (
 	_ resource.ResourceWithConfigure   = (*appAPIKeyResource)(nil)
 	_ resource.ResourceWithImportState = (*appAPIKeyResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*appAPIKeyResource)(nil)
 )
 
 func newAppAPIKeyResource() resource.Resource { return &appAPIKeyResource{} }
@@ -38,15 +39,16 @@ type appAPIKeyResource struct {
 }
 
 type apiKeyModel struct {
-	ID          types.String   `tfsdk:"id"`
-	HRN         types.String   `tfsdk:"hrn"`
-	AppHRN      types.String   `tfsdk:"app_hrn"`
-	Name        types.String   `tfsdk:"name"`
-	ExpiresAt   types.String   `tfsdk:"expires_at"`
-	Enabled     types.Bool     `tfsdk:"enabled"`
-	Value       types.String   `tfsdk:"value"`
-	CreatedTime types.String   `tfsdk:"created_time"`
-	Timeouts    timeouts.Value `tfsdk:"timeouts"`
+	ID                 types.String   `tfsdk:"id"`
+	HRN                types.String   `tfsdk:"hrn"`
+	AppHRN             types.String   `tfsdk:"app_hrn"`
+	Name               types.String   `tfsdk:"name"`
+	ExpiresAt          types.String   `tfsdk:"expires_at"`
+	Enabled            types.Bool     `tfsdk:"enabled"`
+	DeletionProtection types.Bool     `tfsdk:"deletion_protection"`
+	Value              types.String   `tfsdk:"value"`
+	CreatedTime        types.String   `tfsdk:"created_time"`
+	Timeouts           timeouts.Value `tfsdk:"timeouts"`
 }
 
 func (r *appAPIKeyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -58,7 +60,8 @@ func (r *appAPIKeyResource) Schema(ctx context.Context, _ resource.SchemaRequest
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Manages an API key of a HERE platform app.\n\n" +
 			"HERE allows at most two API keys per app. The plaintext key is stored in the Terraform state as the " +
-			"sensitive `value` attribute, so protect the state accordingly. Deleting a key is permanent.",
+			"sensitive `value` attribute, so protect the state accordingly. Deleting a key is permanent, so " +
+			"`deletion_protection` is on by default.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "HRN of the API key.",
@@ -93,6 +96,14 @@ func (r *appAPIKeyResource) Schema(ctx context.Context, _ resource.SchemaRequest
 				Optional:            true,
 				Computed:            true,
 				Default:             booldefault.StaticBool(true),
+			},
+			"deletion_protection": schema.BoolAttribute{
+				MarkdownDescription: "Provider-side guard against deleting the key. While `true`, a plan that destroys or " +
+					"replaces the key fails (Terraform 1.3 or later), and so does any apply that would delete it, such as " +
+					"the replacement of a tainted key. Defaults to `true`, also after import. " + keyRotation,
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(true),
 			},
 			"value": schema.StringAttribute{
 				MarkdownDescription: "Plaintext API key (HERE `apiKeyId`), passed as the `apiKey` query parameter.",
@@ -185,8 +196,39 @@ func (r *appAPIKeyResource) Create(ctx context.Context, req resource.CreateReque
 
 func addCreatedKeyError(diags *diag.Diagnostics, hrn, what string, err error) {
 	diags.AddError("HERE API key created with errors",
-		fmt.Sprintf("API key %s was created, but %s: %s\n\nTerraform marks the key as tainted and replaces it on "+
-			"the next apply; run `terraform untaint` on this resource to keep it instead.", hrn, what, err))
+		fmt.Sprintf("API key %s was created, but %s: %s\n\nTerraform marks the key as tainted: run terraform "+
+			"untaint on this resource to keep it. Otherwise the next apply replaces it, which deletes it first; while "+
+			"deletion_protection is true, the provider refuses that delete.", hrn, what, err))
+}
+
+// keyRotation is the documented way to replace a protected key; HERE allows two per app.
+const keyRotation = "To rotate a key without an outage, add a second `hereplatform_app_api_key` (HERE allows two " +
+	"per app), switch the clients to it, set `deletion_protection = false` on the old key and apply, and then " +
+	"remove the old key."
+
+func guardedKey(keyHRN, appHRN string) guarded {
+	return guarded{
+		what:        "API key " + keyHRN + " of app " + appHRN,
+		consequence: "Deleting an API key is permanent and breaks every client that uses it.",
+		rotation:    "\n\n" + strings.ReplaceAll(keyRotation, "`", ""),
+	}
+}
+
+// ModifyPlan fails plans that destroy or replace a protected key. Tainted keys and -replace
+// reach the provider as creates; Delete stops those.
+func (r *appAPIKeyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.State.Raw.IsNull() || !priorProtected(ctx, req.State, &resp.Diagnostics) {
+		return
+	}
+	priorApp := stringAttr(ctx, req.State.GetAttribute, "app_hrn", &resp.Diagnostics)
+	g := guardedKey(stringAttr(ctx, req.State.GetAttribute, "id", &resp.Diagnostics).ValueString(), priorApp.ValueString())
+	if req.Plan.Raw.IsNull() {
+		g.addDestroyError(&resp.Diagnostics)
+		return
+	}
+	if plannedApp := stringAttr(ctx, req.Plan.GetAttribute, "app_hrn", &resp.Diagnostics); !plannedApp.Equal(priorApp) {
+		g.addReplaceError(&resp.Diagnostics, plannedApp)
+	}
 }
 
 func (r *appAPIKeyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -216,6 +258,7 @@ func (r *appAPIKeyResource) Read(ctx context.Context, req resource.ReadRequest, 
 	state.Name = types.StringValue(key.Name)
 	state.Enabled = types.BoolValue(key.IsEnabled())
 	state.ExpiresAt = expiresAtFromAPI(state.ExpiresAt, key.Expiry())
+	state.DeletionProtection = types.BoolValue(isProtected(state.DeletionProtection))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -234,6 +277,7 @@ func (r *appAPIKeyResource) Update(ctx context.Context, req resource.UpdateReque
 
 	// The framework seeds the new state with the plan, which Terraform would persist on
 	// error; record only what actually changed instead.
+	state.DeletionProtection = plan.DeletionProtection
 	state.Timeouts = plan.Timeouts
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
@@ -266,6 +310,13 @@ func (r *appAPIKeyResource) Update(ctx context.Context, req resource.UpdateReque
 func (r *appAPIKeyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state apiKeyModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if isProtected(state.DeletionProtection) {
+		guardedKey(state.ID.ValueString(), state.AppHRN.ValueString()).addDeleteError(&resp.Diagnostics)
+		return
+	}
 	timeout, diags := state.Timeouts.Delete(ctx, defaultAPIKeyTimeout)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -290,6 +341,7 @@ func (r *appAPIKeyResource) ImportState(ctx context.Context, req resource.Import
 	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("app_hrn"), appHRN)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), keyHRN)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root(attrDeletionProtection), true)...)
 }
 
 func (m *apiKeyModel) applyComputed(key *client.APIKey) {
