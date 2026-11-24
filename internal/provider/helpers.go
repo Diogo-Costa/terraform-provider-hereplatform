@@ -31,6 +31,13 @@ const (
 	descStatus      = "Lifecycle status reported by HERE."
 )
 
+// descCreateTimeout replaces the timeouts library's text, so it starts with it.
+const descCreateTimeout = `A string that can be [parsed as a duration](https://pkg.go.dev/time#ParseDuration) ` +
+	`consisting of numbers and unit suffixes, such as "30s" or "2h45m". Valid time units are ` +
+	`"s" (seconds), "m" (minutes), "h" (hours). A create request already sent when this timeout expires ` +
+	`runs to completion, for up to the 60-second HTTP timeout, so HERE's answer is never lost: the create ` +
+	`can exceed this timeout by up to that much.`
+
 func appHRNValidator() validator.String {
 	return stringvalidator.RegexMatches(appHRNPattern, "must be an app HRN like "+appHRNFormat)
 }
