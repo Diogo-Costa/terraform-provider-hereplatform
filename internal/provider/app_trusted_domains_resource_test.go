@@ -35,6 +35,10 @@ func expectDomains(domains ...string) statecheck.StateCheck {
 	return statecheck.ExpectKnownValue(domainsAddr, tfjsonpath.New("domains"), knownvalue.SetExact(checks))
 }
 
+func expectDomainsEnabled(enabled bool) statecheck.StateCheck {
+	return statecheck.ExpectKnownValue(domainsAddr, tfjsonpath.New("enabled"), knownvalue.Bool(enabled))
+}
+
 func checkLiveDomains(f *fakeHERE, appHRN string, enabled bool, domains ...string) func(*terraform.State) error {
 	want := slices.Sorted(slices.Values(domains))
 	return func(*terraform.State) error {

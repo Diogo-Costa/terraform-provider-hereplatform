@@ -1,9 +1,9 @@
 package provider
 
 import (
-	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -18,6 +18,12 @@ import (
 // testAccProtoV6ProviderFactories serves the provider in-process for each Terraform command.
 var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
 	"hereplatform": providerserver.NewProtocol6WithError(New("test")()),
+}
+
+// TestMain runs the sweepers instead of the tests when -sweep is set (make sweep).
+func TestMain(m *testing.M) {
+	tfresource.AddTestSweepers("hereplatform_app", &tfresource.Sweeper{Name: "hereplatform_app", F: sweepApps})
+	tfresource.TestMain(m)
 }
 
 func testAccPreCheck(t *testing.T) {
@@ -88,7 +94,7 @@ func TestAccProviderAuthenticates(t *testing.T) {
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []tfresource.TestStep{{
-			Config:      fmt.Sprintf(`data "hereplatform_app" "test" { name = %q }`, name),
+			Config:      appDataBlock("name = " + strconv.Quote(name)),
 			ExpectError: regexp.MustCompile(`HERE app not found`),
 		}},
 	})
