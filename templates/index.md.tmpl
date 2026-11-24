@@ -11,6 +11,8 @@ description: |-
 The provider calls the HERE Authentication API v1.1 as an *automation app*: a HERE platform app whose
 credentials Terraform uses. HERE grants the automation app manage permission on the apps it creates.
 
+The provider requires Terraform 1.3 or later, which lets it check `deletion_protection` at plan time.
+
 ## Bootstrap
 
 A human Org Admin prepares the automation app once:
@@ -36,12 +38,18 @@ values of a HERE `credentials.properties` file can be used through `credentials_
   downloaded `credentials.properties` file.
 
 When both methods are complete, `private_key_jwt` is used. Tokens are requested without a scope,
-because the identity endpoints reject project-scoped tokens, and are cached and refreshed before
-they expire.
+because the identity endpoints reject project-scoped tokens, with a one-hour lifetime, and are cached
+and refreshed before they expire.
+
+Prefer the environment variables, with an empty `provider "hereplatform" {}` block, to arguments:
+unlike input variables, they never end up in saved plan files.
 
 ## Example Usage
 
 {{ tffile .ExampleFile }}
+
+Pin the provider version, as above, and commit the `.terraform.lock.hcl` file that `terraform init`
+writes, so every run installs the same checksum-verified build.
 
 ## Behaviour and limits
 
@@ -49,8 +57,44 @@ they expire.
   (HTTP 429) and transient errors, and waits after each change until reads reflect it, within the
   resource timeouts.
 * An app can have at most two API keys.
-* Trusted domain changes can take up to 30 minutes to be enforced.
-* Deleting an app or an API key is permanent. `hereplatform_app` has `deletion_protection`, on by
-  default.
+* Trusted domain changes can take up to 30 minutes to be enforced. While enforcement is off, HERE
+  accepts the app's API keys from any origin.
+* HERE may apply a create whose response is lost, for example on a timeout or a server error. The
+  provider does not retry such a create and fails instead: check HERE, and import the object if it
+  exists or apply again if it does not.
+
+## Deletion protection
+
+Deleting an app or an API key is permanent, and deleting a trusted domain configuration turns its
+enforcement off. All three resources therefore have `deletion_protection`, which defaults to `true`,
+also after import:
+
+* A plan that destroys a protected resource fails, and so does a plan that replaces a protected API
+  key or trusted domain configuration. Nothing is deleted, including the resources that depend on it.
+* To delete a resource, set `deletion_protection = false` and apply, and then remove it from the
+  configuration or destroy it.
+* To stop managing a resource without changing HERE, use a `removed` block with
+  `lifecycle { destroy = false }` (Terraform 1.7 or later), or `terraform state rm`.
+* Terraform plans the replacement of a tainted resource, or of one targeted by `-replace` or
+  `replace_triggered_by`, as a create, so the provider can only stop it when the delete is applied.
+  To keep the resource, run `terraform untaint`, or plan again without `-replace`.
+
+To rotate an API key without an outage, add a second `hereplatform_app_api_key` to the app and
+apply, switch the clients to the new key, set `deletion_protection = false` on the old key and
+apply, and then remove the old key.
+
+## Security
+
+* `hereplatform_app_api_key.value` holds the plaintext API key. It is stored in the state and in
+  saved plan files (`terraform plan -out`), which also hold the values of input variables. Treat
+  both as secrets: restrict access to the state backend, and do not keep plan files as CI artifacts.
+* Keep credentials in the environment, or in a `credentials.properties` file that only its owner can
+  access. The provider warns when other users can access the file.
+* `token_url` and `api_url` receive credentials, so only HERE and loopback addresses are accepted,
+  unless `HERE_ALLOW_CUSTOM_ENDPOINTS=1` is set in the environment.
+* `TF_LOG=DEBUG` logs each HERE request's method, path, status and correlation ID, never tokens,
+  keys, secrets or bodies. `TF_LOG_SDK_PROTO_DATA_DIR`, by contrast, makes the plugin libraries write
+  every raw message from Terraform to disk, including the provider configuration, plans and state
+  with their secrets: never set it in CI or on a shared machine.
 
 {{ .SchemaMarkdown | trimspace }}

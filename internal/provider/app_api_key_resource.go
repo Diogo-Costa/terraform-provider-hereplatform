@@ -59,9 +59,9 @@ func (r *appAPIKeyResource) Schema(ctx context.Context, _ resource.SchemaRequest
 	stable := []planmodifier.String{stringplanmodifier.UseStateForUnknown()}
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Manages an API key of a HERE platform app.\n\n" +
-			"HERE allows at most two API keys per app. The plaintext key is stored in the Terraform state as the " +
-			"sensitive `value` attribute, so protect the state accordingly. Deleting a key is permanent, so " +
-			"`deletion_protection` is on by default.",
+			"HERE allows at most two API keys per app. The plaintext key is stored as the sensitive `value` " +
+			"attribute in the Terraform state and in saved plan files, so protect both accordingly. Deleting a " +
+			"key is permanent, so `deletion_protection` is on by default.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "HRN of the API key.",

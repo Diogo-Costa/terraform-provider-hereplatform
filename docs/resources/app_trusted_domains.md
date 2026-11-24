@@ -69,6 +69,7 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
-# Trusted domains are imported by the HRN of their app.
+# Trusted domains are imported by the HRN of their app, and start with
+# deletion_protection = true.
 terraform import hereplatform_app_trusted_domains.example "hrn:here:account::myrealm:app/AbCdEfGhIjKlMnOpQrSt"
 ```

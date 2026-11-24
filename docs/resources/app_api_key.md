@@ -4,14 +4,14 @@ page_title: "hereplatform_app_api_key Resource - HERE platform"
 subcategory: ""
 description: |-
   Manages an API key of a HERE platform app.
-  HERE allows at most two API keys per app. The plaintext key is stored in the Terraform state as the sensitive value attribute, so protect the state accordingly. Deleting a key is permanent, so deletion_protection is on by default.
+  HERE allows at most two API keys per app. The plaintext key is stored as the sensitive value attribute in the Terraform state and in saved plan files, so protect both accordingly. Deleting a key is permanent, so deletion_protection is on by default.
 ---
 
 # hereplatform_app_api_key (Resource)
 
 Manages an API key of a HERE platform app.
 
-HERE allows at most two API keys per app. The plaintext key is stored in the Terraform state as the sensitive `value` attribute, so protect the state accordingly. Deleting a key is permanent, so `deletion_protection` is on by default.
+HERE allows at most two API keys per app. The plaintext key is stored as the sensitive `value` attribute in the Terraform state and in saved plan files, so protect both accordingly. Deleting a key is permanent, so `deletion_protection` is on by default.
 
 ## Example Usage
 
@@ -72,6 +72,7 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 
 ```shell
 # API keys are imported by "<app_hrn>,<apikey_hrn>", because HERE reads keys only
-# through their app. The plaintext value is recovered on import.
+# through their app. The plaintext value is recovered on import, and imported keys
+# start with deletion_protection = true.
 terraform import hereplatform_app_api_key.example "hrn:here:account::myrealm:app/AbCdEfGhIjKlMnOpQrSt,hrn:here:account::myrealm:apikey/AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-AbCd"
 ```
