@@ -146,6 +146,7 @@ func (p *hereProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 func (p *hereProvider) Resources(context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		newAppResource,
+		newAppAPIKeyResource,
 	}
 }
 
