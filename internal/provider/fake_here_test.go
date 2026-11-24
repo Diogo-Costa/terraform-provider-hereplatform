@@ -148,6 +148,9 @@ type fakeHERE struct {
 	calls      []fakeCall
 	count      map[string]int
 	tokens     map[string]bool
+	issued     []string
+	assertions []string
+	keyValues  []string
 	jtis       map[string]bool
 	unexpected []string
 
@@ -296,6 +299,13 @@ func (f *fakeHERE) deleteApp(hrn string) {
 	f.update(func() {
 		f.store = slices.DeleteFunc(f.store, func(a *fakeApp) bool { return a.HRN == hrn })
 	})
+}
+
+// secrets returns every credential the fake issued or received, deleted keys included.
+func (f *fakeHERE) secrets() (tokens, assertions, keyValues []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.issued), slices.Clone(f.assertions), slices.Clone(f.keyValues)
 }
 
 func (a *fakeApp) clone() fakeApp {
@@ -448,7 +458,12 @@ func (f *fakeHERE) handle(r *http.Request, body []byte) fakeReply {
 	c := fakeCall{
 		Route: route, App: app, Key: key, Query: r.URL.Query(), RawQuery: r.URL.RawQuery, Body: body, N: f.count[route],
 	}
-	if route != routeToken {
+	if route == routeToken {
+		// Recorded before hooks run, so that secret scans also cover rejected assertions.
+		if form, err := url.ParseQuery(string(body)); err == nil && form.Get("client_assertion") != "" {
+			f.assertions = append(f.assertions, form.Get("client_assertion"))
+		}
+	} else {
 		c.Token, _ = strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	}
 	f.calls = append(f.calls, c)
@@ -526,6 +541,7 @@ func (f *fakeHERE) issueToken(c fakeCall) fakeReply {
 	}
 	token := "fake-access-token-" + rand.Text()
 	f.tokens[token] = true
+	f.issued = append(f.issued, token)
 	return okJSON(map[string]any{"access_token": token, "token_type": "bearer", "expires_in": 3600})
 }
 
@@ -647,6 +663,7 @@ func (f *fakeHERE) handleKeys(c fakeCall, a *fakeApp) fakeReply {
 			k.ExpiresAt = *in.ExpiresAt
 		}
 		a.Keys = append(a.Keys, k)
+		f.keyValues = append(f.keyValues, k.Value)
 		return fakeReply{status: http.StatusCreated, body: k.json(a)}
 	}
 	k := a.findKey(c.Key)
