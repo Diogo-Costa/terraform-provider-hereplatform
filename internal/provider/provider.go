@@ -90,7 +90,7 @@ func (p *hereProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp 
 			},
 			"key_id": schema.StringAttribute{
 				MarkdownDescription: "`kid` of the registered JWK, sent in the client assertion header. Optional but " +
-					"recommended by HERE. Defaults to `" + envKeyID + "`.",
+					"recommended by HERE: without it, the provider warns. Defaults to `" + envKeyID + "`.",
 				Optional: true,
 			},
 			"access_key_id": schema.StringAttribute{
@@ -105,8 +105,9 @@ func (p *hereProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp 
 				Sensitive: true,
 			},
 			"credentials_file": schema.StringAttribute{
-				MarkdownDescription: "Path to a HERE `credentials.properties` file. Defaults to `" + envCredentialsFile + "`.",
-				Optional:            true,
+				MarkdownDescription: "Path to a HERE `credentials.properties` file. Defaults to `" + envCredentialsFile +
+					"`. The provider warns when other users can access the file.",
+				Optional: true,
 			},
 			"token_url": schema.StringAttribute{
 				MarkdownDescription: "OAuth token endpoint. Defaults to `" + envTokenURL + "`, then to " +

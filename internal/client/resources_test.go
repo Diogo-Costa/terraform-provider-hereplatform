@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -342,8 +345,27 @@ func TestParseCredentials(t *testing.T) {
 }
 
 func TestReadCredentialsFile(t *testing.T) {
-	if _, err := ReadCredentialsFile(t.TempDir() + "/missing.properties"); err == nil {
+	if _, _, err := ReadCredentialsFile(t.TempDir() + "/missing.properties"); err == nil {
 		t.Fatal("expected an error for a missing file")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows file modes do not reflect ACLs")
+	}
+	for mode, want := range map[os.FileMode]bool{0o600: false, 0o400: false, 0o640: true, 0o604: true, 0o620: true} {
+		t.Run(mode.String(), func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "credentials.properties")
+			if err := os.WriteFile(file, []byte("here.access.key.id = AKID\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// Chmod, unlike WriteFile, ignores the umask.
+			if err := os.Chmod(file, mode); err != nil {
+				t.Fatal(err)
+			}
+			creds, shared, err := ReadCredentialsFile(file)
+			if err != nil || creds.AccessKeyID != "AKID" || shared != want {
+				t.Fatalf("ReadCredentialsFile = %+v, %t, %v; want shared = %t", creds, shared, err, want)
+			}
+		})
 	}
 }
 

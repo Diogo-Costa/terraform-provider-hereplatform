@@ -5,8 +5,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 )
+
+// sharedPermBits are the group and other permission bits; any of them exposes the secret.
+const sharedPermBits = 0o077
 
 // Credentials holds the fields of a HERE credentials.properties file.
 type Credentials struct {
@@ -16,14 +20,19 @@ type Credentials struct {
 	TokenURL        string
 }
 
-// ReadCredentialsFile parses a HERE credentials.properties file.
-func ReadCredentialsFile(path string) (*Credentials, error) {
+// ReadCredentialsFile parses a HERE credentials.properties file. shared reports whether its
+// permissions give other users access; it is always false on Windows, which uses ACLs.
+func ReadCredentialsFile(path string) (creds *Credentials, shared bool, err error) {
 	f, err := os.Open(path) //nolint:gosec // the path is operator-supplied configuration.
 	if err != nil {
-		return nil, fmt.Errorf("opening credentials file: %w", err)
+		return nil, false, fmt.Errorf("opening credentials file: %w", err)
 	}
 	defer f.Close()
-	return ParseCredentials(f)
+	if info, err := f.Stat(); err == nil && runtime.GOOS != "windows" {
+		shared = info.Mode().Perm()&sharedPermBits != 0
+	}
+	creds, err = ParseCredentials(f)
+	return creds, shared, err
 }
 
 // ParseCredentials reads the "key = value" lines HERE generates. Errors cite line

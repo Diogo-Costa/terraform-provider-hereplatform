@@ -92,10 +92,15 @@ func resolveSettings(m providerModel, getenv func(string) string) (settings, dia
 
 	var creds client.Credentials
 	if file := firstValue(m.CredentialsFile, getenv(envCredentialsFile)); file != "" {
-		c, err := client.ReadCredentialsFile(file)
+		c, shared, err := client.ReadCredentialsFile(file)
 		if err != nil {
 			diags.AddAttributeError(path.Root("credentials_file"), "Unable to read the HERE credentials file", err.Error())
 			return settings{}, diags
+		}
+		if shared {
+			diags.AddAttributeWarning(path.Root("credentials_file"), "Credentials file is accessible to other users",
+				"The HERE credentials file holds the access key secret, but its permissions give other users access "+
+					"to it. Make it accessible to its owner only, for example with chmod 600.")
 		}
 		creds = *c
 	}
@@ -153,6 +158,12 @@ func resolveAuth(s settings, diags *diag.Diagnostics) client.Auth {
 			diags.AddAttributeError(path.Root("key_id"), "Invalid key_id",
 				"key_id must be 1 to 256 characters from A-Z, a-z, 0-9, '.', '_' and '-'.")
 			return nil
+		}
+		if s.keyID == "" {
+			diags.AddAttributeWarning(path.Root("key_id"), "key_id is not set",
+				"Client assertions are sent without a kid header. HERE documents kid as optional but strongly "+
+					"recommended, and parts of its token reference require it. Set key_id or "+envKeyID+
+					" to the kid of the JWK registered for the app.")
 		}
 		if accessKeyReady {
 			diags.AddWarning("Multiple HERE authentication methods configured",

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -64,6 +65,41 @@ func TestResolveConfigPrefersJWT(t *testing.T) {
 	}
 	if cfg.TokenURL != client.DefaultTokenURL || cfg.APIURL != client.DefaultAPIURL {
 		t.Fatalf("endpoints = %q, %q", cfg.TokenURL, cfg.APIURL)
+	}
+}
+
+func TestResolveConfigWarnsWithoutKeyID(t *testing.T) {
+	pem := testPEM(t)
+	for keyID, warnings := range map[string]int{"": 1, "key-1": 0} {
+		m := providerModel{ClientID: types.StringValue("client-1"), PrivateKey: types.StringValue(pem), KeyID: types.StringValue(keyID)}
+		_, diags := resolveConfig(m, envOf(nil))
+		text := diagText(diags)
+		if diags.HasError() || diags.WarningsCount() != warnings || strings.Contains(text, "key_id is not set") != (warnings == 1) {
+			t.Fatalf("key_id %q: unexpected diagnostics %s", keyID, text)
+		}
+	}
+}
+
+func TestResolveSettingsWarnsAboutSharedCredentialsFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows file modes do not reflect ACLs")
+	}
+	for mode, warns := range map[os.FileMode]bool{0o600: false, 0o644: true} {
+		file := filepath.Join(t.TempDir(), "credentials.properties")
+		if err := os.WriteFile(file, []byte("here.access.key.id = AKID\nhere.access.key.secret = "+testSecret+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(file, mode); err != nil {
+			t.Fatal(err)
+		}
+		_, diags := resolveConfig(providerModel{CredentialsFile: types.StringValue(file)}, envOf(nil))
+		text := diagText(diags)
+		if diags.HasError() || strings.Contains(text, "Credentials file is accessible to other users") != warns {
+			t.Fatalf("mode %v: unexpected diagnostics %s", mode, text)
+		}
+		if strings.Contains(text, testSecret) || strings.Contains(text, file) {
+			t.Fatalf("mode %v: diagnostics echo the file path or its secret", mode)
+		}
 	}
 }
 
