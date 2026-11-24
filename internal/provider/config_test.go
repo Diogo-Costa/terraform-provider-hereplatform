@@ -1,0 +1,173 @@
+package provider
+
+import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"github.com/Diogo-Costa/terraform-provider-hereplatform/internal/client"
+)
+
+const testSecret = "s3cr3t-value-that-must-not-leak"
+
+func testPEM(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+}
+
+func envOf(vars map[string]string) func(string) string {
+	return func(k string) string { return vars[k] }
+}
+
+func authType(cfg client.Config) string { return fmt.Sprintf("%T", cfg.Auth) }
+
+func diagText(diags diag.Diagnostics) string {
+	var b strings.Builder
+	for _, d := range diags {
+		b.WriteString(d.Summary() + ": " + d.Detail() + "\n")
+	}
+	return b.String()
+}
+
+func TestResolveConfigPrefersJWT(t *testing.T) {
+	m := providerModel{
+		ClientID:   types.StringValue("client-1"),
+		PrivateKey: types.StringValue(testPEM(t)),
+		KeyID:      types.StringValue("key-1"),
+	}
+	cfg, diags := resolveConfig(m, envOf(map[string]string{envAccessKeyID: "AKID", envAccessKeySecret: testSecret}))
+	if diags.HasError() {
+		t.Fatalf("unexpected errors: %s", diagText(diags))
+	}
+	if got := authType(cfg); got != "*client.jwtAuth" {
+		t.Fatalf("auth = %s, want JWT", got)
+	}
+	if diags.WarningsCount() != 1 || !strings.Contains(diagText(diags), "uses private_key_jwt") {
+		t.Fatalf("expected a warning about both methods, got %s", diagText(diags))
+	}
+	if cfg.TokenURL != client.DefaultTokenURL || cfg.APIURL != client.DefaultAPIURL {
+		t.Fatalf("endpoints = %q, %q", cfg.TokenURL, cfg.APIURL)
+	}
+}
+
+func TestResolveConfigAccessKeyFromEnv(t *testing.T) {
+	cfg, diags := resolveConfig(providerModel{}, envOf(map[string]string{
+		envAccessKeyID: "AKID", envAccessKeySecret: testSecret, envKeyID: "ignored",
+		envAPIURL: "http://127.0.0.1:8080/authentication/v1.1",
+	}))
+	if diags.HasError() {
+		t.Fatalf("unexpected errors: %s", diagText(diags))
+	}
+	if got := authType(cfg); got != "*client.oauth1Auth" {
+		t.Fatalf("auth = %s, want OAuth 1.0", got)
+	}
+	if !strings.Contains(diagText(diags), "key_id is ignored") {
+		t.Fatalf("expected a key_id warning, got %s", diagText(diags))
+	}
+	if cfg.APIURL != "http://127.0.0.1:8080/authentication/v1.1" {
+		t.Fatalf("api_url = %q", cfg.APIURL)
+	}
+}
+
+func TestResolveSettingsPrecedence(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "credentials.properties")
+	content := "here.user.id = HERE-user\nhere.client.id = file-client\nhere.access.key.id = file-akid\n" +
+		"here.access.key.secret = file-secret\nhere.token.endpoint.url = https://token.example.com/oauth2/token\n"
+	if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := providerModel{AccessKeySecret: types.StringValue(" attr-secret ")}
+	s, diags := resolveSettings(m, envOf(map[string]string{envCredentialsFile: file, envAccessKeyID: "env-akid"}))
+	if diags.HasError() {
+		t.Fatalf("unexpected errors: %s", diagText(diags))
+	}
+	want := settings{
+		clientID:        "file-client",
+		accessKeyID:     "env-akid",
+		accessKeySecret: "attr-secret",
+		tokenURL:        "https://token.example.com/oauth2/token",
+		apiURL:          client.DefaultAPIURL,
+	}
+	if s != want {
+		t.Fatalf("settings = %+v, want %+v", s, want)
+	}
+}
+
+func TestResolveConfigErrors(t *testing.T) {
+	validPEM := testPEM(t)
+	tests := map[string]struct {
+		model providerModel
+		env   map[string]string
+		want  string
+	}{
+		"private key without client ID": {
+			model: providerModel{PrivateKey: types.StringValue(validPEM)},
+			env:   map[string]string{envAccessKeyID: "AKID", envAccessKeySecret: testSecret},
+			want:  "Incomplete private_key_jwt configuration",
+		},
+		"missing credentials": {
+			env:  map[string]string{envAccessKeySecret: testSecret},
+			want: "Set: access_key_secret. Missing: client_id, private_key, access_key_id.",
+		},
+		"invalid private key": {
+			model: providerModel{ClientID: types.StringValue("client-1"), PrivateKey: types.StringValue(testSecret)},
+			want:  "Invalid private key",
+		},
+		"invalid key ID": {
+			model: providerModel{ClientID: types.StringValue("c"), PrivateKey: types.StringValue(validPEM), KeyID: types.StringValue("bad kid")},
+			want:  "Invalid key_id",
+		},
+		"plain HTTP endpoint": {
+			model: providerModel{TokenURL: types.StringValue("http://token.example.com/oauth2/token")},
+			env:   map[string]string{envAccessKeyID: "AKID", envAccessKeySecret: testSecret},
+			want:  "Invalid token_url: HTTPS is required",
+		},
+		"unknown value": {
+			model: providerModel{ClientID: types.StringUnknown()},
+			want:  "Unknown client_id",
+		},
+		"unreadable credentials file": {
+			model: providerModel{CredentialsFile: types.StringValue(filepath.Join(t.TempDir(), "absent"))},
+			want:  "Unable to read the HERE credentials file",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, diags := resolveConfig(tc.model, envOf(tc.env))
+			text := diagText(diags)
+			if !diags.HasError() || !strings.Contains(text, tc.want) {
+				t.Fatalf("diagnostics %q do not contain %q", text, tc.want)
+			}
+			if strings.Contains(text, testSecret) || strings.Contains(text, "PRIVATE KEY") {
+				t.Fatalf("diagnostics leak a secret: %s", text)
+			}
+		})
+	}
+}
+
+func TestNormalizePEM(t *testing.T) {
+	flattened := strings.ReplaceAll(testPEM(t), "\n", `\n`)
+	if _, err := client.ParseRSAPrivateKey(normalizePEM(flattened)); err != nil {
+		t.Fatalf("flattened PEM not restored: %v", err)
+	}
+	if got := normalizePEM("a\nb\\nc"); got != "a\nb\\nc" {
+		t.Fatalf("PEM with real newlines must be left alone, got %q", got)
+	}
+}
