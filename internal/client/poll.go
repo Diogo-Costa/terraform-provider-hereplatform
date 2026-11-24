@@ -23,6 +23,9 @@ func (c *Client) Retry(ctx context.Context, what string, retryable func(error) b
 		switch {
 		case err == nil:
 			return nil
+		// The create may have succeeded, which outranks the errors that led to it.
+		case IsUnconfirmed(err):
+			return err
 		case ctx.Err() != nil && last != nil:
 			return fmt.Errorf("timed out waiting for %s: %w", what, last)
 		case !retryable(err):

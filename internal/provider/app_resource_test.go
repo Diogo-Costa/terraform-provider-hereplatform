@@ -315,6 +315,32 @@ func TestAppResourceCreateFailure(t *testing.T) {
 	})
 }
 
+// checkCreatedOnce asserts that a create HERE may have applied was not replayed.
+func checkCreatedOnce(f *fakeHERE, route string) func(*terraform.State) error {
+	return func(s *terraform.State) error {
+		if n := len(f.callsOf(route)); n != 1 {
+			return fmt.Errorf("%d %s requests, want 1", n, route)
+		}
+		return checkNoApps(f)(s)
+	}
+}
+
+func TestAppResourceUnconfirmedCreateIsNotReplayed(t *testing.T) {
+	t.Parallel()
+	f := newFakeHERE(t)
+	f.hook(always(routeCreateApp, hereError(http.StatusServiceUnavailable, "503000", "Service unavailable")))
+
+	tfresource.UnitTest(t, tfresource.TestCase{
+		ProtoV6ProviderFactories: f.factories(),
+		CheckDestroy:             checkCreatedOnce(f, routeCreateApp),
+		Steps: []tfresource.TestStep{{
+			Config: appConfig("tfacc-unconfirmed"),
+			ExpectError: regexp.MustCompile(
+				`(?s)HERE\s+app\s+creation\s+could\s+not\s+be\s+confirmed.*Service\s+unavailable.*import\s+it\s+by\s+its\s+HRN`),
+		}},
+	})
+}
+
 func TestAppResourceCreateTimeoutTaintsApp(t *testing.T) {
 	t.Parallel()
 	f := newFakeHERE(t)

@@ -130,6 +130,23 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
+// UnconfirmedError reports a create that reached HERE without a definite answer: a server
+// failure, a lost connection, a timeout or an unreadable response. HERE may have applied it.
+type UnconfirmedError struct {
+	Err error
+}
+
+func (e *UnconfirmedError) Error() string { return e.Err.Error() }
+
+func (e *UnconfirmedError) Unwrap() error { return e.Err }
+
+// IsUnconfirmed reports whether err leaves it unknown whether HERE applied a create, which
+// must then not be retried blindly.
+func IsUnconfirmed(err error) bool {
+	var u *UnconfirmedError
+	return errors.As(err, &u)
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if strings.TrimSpace(v) != "" {

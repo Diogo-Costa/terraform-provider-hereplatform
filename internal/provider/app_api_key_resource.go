@@ -153,6 +153,15 @@ func (r *appAPIKeyResource) Create(ctx context.Context, req resource.CreateReque
 		created, err = r.client.CreateAPIKey(ctx, appHRN, in)
 		return err
 	})
+	if client.IsUnconfirmed(err) {
+		resp.Diagnostics.AddError("HERE API key creation could not be confirmed", fmt.Sprintf(
+			"HERE may have created API key %q on app %s: %s\n\nThe provider does not retry the request: a "+
+				"second key could take the last of the app's two key slots. Check the app's API keys in HERE. If the "+
+				"key exists, import it with the ID <app_hrn>,<apikey_hrn>, with an import block or terraform import, "+
+				"or delete it, instead of applying again; if it does not, apply again.",
+			plan.Name.ValueString(), appHRN, err))
+		return
+	}
 	if err != nil {
 		detail := err.Error()
 		if client.HasCode(err, codeMaxAPIKeys) {

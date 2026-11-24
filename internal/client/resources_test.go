@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -318,6 +319,25 @@ func TestRetryStopsOnNonRetryableError(t *testing.T) {
 	_, err := c.WaitForApp(t.Context(), testAppHRN)
 	if !HasStatus(err, http.StatusBadRequest) || len(rec.Requests()) != 1 {
 		t.Fatalf("err = %v, requests = %d", err, len(rec.Requests()))
+	}
+}
+
+func TestRetryReportsUnconfirmedCreates(t *testing.T) {
+	c, rec, _ := newTestClient(t, func(n int, w http.ResponseWriter, r *http.Request) {
+		if n == 1 {
+			writeJSON(w, http.StatusConflict, `{"title":"Too many API keys","status":409,"code":"409303"}`)
+			return
+		}
+		<-r.Context().Done()
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	err := c.Retry(ctx, "a free API key slot", func(err error) bool { return HasCode(err, 409303) }, func(ctx context.Context) error {
+		_, err := c.CreateAPIKey(ctx, testAppHRN, CreateAPIKeyInput{Name: "x"})
+		return err
+	})
+	if !IsUnconfirmed(err) || len(rec.Requests()) != 2 {
+		t.Fatalf("got %v after %d request(s), want the second create unconfirmed", err, len(rec.Requests()))
 	}
 }
 

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -72,7 +73,7 @@ func (c *Client) CreateAPIKey(ctx context.Context, appHRN string, in CreateAPIKe
 		return nil, err
 	}
 	if key.HRN == "" {
-		return nil, fmt.Errorf("POST /apps/{app}/apiKeys: response has no API key HRN")
+		return nil, &UnconfirmedError{Err: errors.New("POST /apps/{app}/apiKeys: response has no API key HRN")}
 	}
 	return &key, nil
 }

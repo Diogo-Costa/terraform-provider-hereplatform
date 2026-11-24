@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -564,6 +565,22 @@ func TestAPIKeyResourceFailures(t *testing.T) {
 				ExpectError: regexp.MustCompile(`Unable to delete HERE API key`),
 			},
 		},
+	})
+}
+
+func TestAPIKeyResourceUnconfirmedCreateIsNotReplayed(t *testing.T) {
+	t.Parallel()
+	f := newFakeHERE(t)
+	f.hook(always(routeCreateKey, hereError(http.StatusGatewayTimeout, "504000", "Gateway timeout")))
+
+	tfresource.UnitTest(t, tfresource.TestCase{
+		ProtoV6ProviderFactories: f.factories(),
+		CheckDestroy:             checkCreatedOnce(f, routeCreateKey),
+		Steps: []tfresource.TestStep{{
+			Config: keyConfig(`name = "primary"`),
+			ExpectError: regexp.MustCompile(
+				`(?s)HERE\s+API\s+key\s+creation\s+could\s+not\s+be\s+confirmed.*Gateway\s+timeout.*<app_hrn>,<apikey_hrn>`),
+		}},
 	})
 }
 

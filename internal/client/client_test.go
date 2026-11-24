@@ -251,21 +251,25 @@ func TestRetryAfterBeyondLimitFailsFast(t *testing.T) {
 }
 
 func TestServerErrorRetries(t *testing.T) {
+	createKey := func(ctx context.Context, c *Client) error {
+		_, err := c.CreateAPIKey(ctx, testAppHRN, CreateAPIKeyInput{Name: "x"})
+		return err
+	}
 	tests := []struct {
-		name     string
-		status   int
-		call     func(context.Context, *Client) error
-		attempts int
+		name        string
+		status      int
+		call        func(context.Context, *Client) error
+		attempts    int
+		unconfirmed bool
 	}{
 		{name: "GET 500 is retried", status: 500, call: func(ctx context.Context, c *Client) error { _, err := c.GetApp(ctx, testAppHRN); return err }, attempts: 4},
 		{name: "create 500 is not replayed", status: 500, call: func(ctx context.Context, c *Client) error {
 			_, err := c.CreateApp(ctx, CreateAppInput{Name: "x"})
 			return err
-		}, attempts: 1},
-		{name: "create 503 is retried", status: 503, call: func(ctx context.Context, c *Client) error {
-			_, err := c.CreateAPIKey(ctx, testAppHRN, CreateAPIKeyInput{Name: "x"})
-			return err
-		}, attempts: 4},
+		}, attempts: 1, unconfirmed: true},
+		{name: "create 503 is not replayed", status: 503, call: createKey, attempts: 1, unconfirmed: true},
+		{name: "create 429 is retried", status: 429, call: createKey, attempts: 4},
+		{name: "create 501 is definite", status: 501, call: createKey, attempts: 1},
 		{name: "501 is not retried", status: 501, call: func(ctx context.Context, c *Client) error { return c.DeleteApp(ctx, testAppHRN) }, attempts: 1},
 		{name: "404 is not retried", status: 404, call: func(ctx context.Context, c *Client) error { _, err := c.GetApp(ctx, testAppHRN); return err }, attempts: 1},
 	}
@@ -280,6 +284,9 @@ func TestServerErrorRetries(t *testing.T) {
 			}
 			if got := len(rec.Requests()); got != tt.attempts {
 				t.Fatalf("attempts = %d, want %d", got, tt.attempts)
+			}
+			if IsUnconfirmed(err) != tt.unconfirmed {
+				t.Fatalf("IsUnconfirmed = %t, want %t", !tt.unconfirmed, tt.unconfirmed)
 			}
 			for _, d := range sleeps.Durations() {
 				if d <= 0 || d > DefaultRetryPolicy().MaxBackoff {
@@ -343,6 +350,86 @@ func TestNetworkErrorRetries(t *testing.T) {
 				t.Fatal("expected the network error")
 			}
 		})
+	}
+}
+
+func TestUnconfirmedCreates(t *testing.T) {
+	createApp := func(ctx context.Context, c *Client) error {
+		_, err := c.CreateApp(ctx, CreateAppInput{Name: "x"})
+		return err
+	}
+	createKey := func(ctx context.Context, c *Client) error {
+		_, err := c.CreateAPIKey(ctx, testAppHRN, CreateAPIKeyInput{Name: "x"})
+		return err
+	}
+	getApp := func(ctx context.Context, c *Client) error { _, err := c.GetApp(ctx, testAppHRN); return err }
+	hangUp := func(_ int, w http.ResponseWriter, _ *http.Request) {
+		if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+			_ = conn.Close()
+		}
+	}
+	reply := func(status int, body string) func(int, http.ResponseWriter, *http.Request) {
+		return func(_ int, w http.ResponseWriter, _ *http.Request) { writeJSON(w, status, body) }
+	}
+	tests := []struct {
+		name        string
+		handler     func(int, http.ResponseWriter, *http.Request)
+		call        func(context.Context, *Client) error
+		unconfirmed bool
+	}{
+		{"connection lost after a create", hangUp, createApp, true},
+		{"connection lost after a GET", hangUp, getApp, false},
+		{"unreadable create response", reply(http.StatusOK, "{not json"), createKey, true},
+		{"unreadable GET response", reply(http.StatusOK, "{not json"), getApp, false},
+		{"app create response without an HRN", reply(http.StatusOK, "{}"), createApp, true},
+		{"API key create response without an HRN", reply(http.StatusCreated, `{"name":"x"}`), createKey, true},
+		{"create rejected", reply(http.StatusBadRequest, `{"title":"bad"}`), createApp, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, rec, _ := newTestClient(t, tt.handler)
+			err := tt.call(t.Context(), c)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if IsUnconfirmed(err) != tt.unconfirmed {
+				t.Fatalf("IsUnconfirmed = %t, want %t: %v", !tt.unconfirmed, tt.unconfirmed, err)
+			}
+			if tt.unconfirmed && len(rec.Requests()) != 1 {
+				t.Fatalf("%d requests; an unconfirmed create must not be replayed", len(rec.Requests()))
+			}
+		})
+	}
+}
+
+func TestCreateTimeoutAfterSendIsUnconfirmed(t *testing.T) {
+	c, rec, _ := newTestClient(t, func(_ int, _ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := c.CreateApp(ctx, CreateAppInput{Name: "x"})
+	if !IsUnconfirmed(err) || !errors.Is(err, context.DeadlineExceeded) || len(rec.Requests()) != 1 {
+		t.Fatalf("got %v after %d request(s), want an unconfirmed deadline error after 1", err, len(rec.Requests()))
+	}
+
+	ctx, cancel = context.WithCancel(t.Context())
+	cancel()
+	if _, err := c.CreateApp(ctx, CreateAppInput{Name: "x"}); err == nil || IsUnconfirmed(err) {
+		t.Fatalf("a create cancelled before it was sent must fail definitely, got %v", err)
+	}
+}
+
+func TestCreateThatNeverReachedHEREIsDefinite(t *testing.T) {
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+	c, _, sleeps := newTestClient(t, func(int, http.ResponseWriter, *http.Request) {}, func(cfg *Config) {
+		cfg.APIURL = closed.URL + apiPrefix
+	})
+	_, err := c.CreateApp(t.Context(), CreateAppInput{Name: "x"})
+	if err == nil || IsUnconfirmed(err) {
+		t.Fatalf("a refused connection must fail definitely, got %v", err)
+	}
+	if n := len(sleeps.Durations()); n != 3 {
+		t.Fatalf("%d retries of a create that never reached HERE, want 3", n)
 	}
 }
 

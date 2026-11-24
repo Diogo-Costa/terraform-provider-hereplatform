@@ -141,6 +141,13 @@ func (r *appResource) Create(ctx context.Context, req resource.CreateRequest, re
 		Name:        plan.Name.ValueString(),
 		Description: plan.Description.ValueString(),
 	})
+	if client.IsUnconfirmed(err) {
+		resp.Diagnostics.AddError("HERE app creation could not be confirmed", fmt.Sprintf(
+			"HERE may have created app %q: %s\n\nThe provider does not retry the request, which could create a "+
+				"second app. Check HERE for the app. If it exists, import it by its HRN, with an import block or "+
+				"terraform import, instead of applying again; if it does not, apply again.", plan.Name.ValueString(), err))
+		return
+	}
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to create HERE app", err.Error())
 		return

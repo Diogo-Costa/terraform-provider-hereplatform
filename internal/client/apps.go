@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -66,7 +67,7 @@ func (c *Client) CreateApp(ctx context.Context, in CreateAppInput) (*App, error)
 		return nil, err
 	}
 	if app.HRN == "" {
-		return nil, fmt.Errorf("POST /apps: response has no app HRN")
+		return nil, &UnconfirmedError{Err: errors.New("POST /apps: response has no app HRN")}
 	}
 	return &app, nil
 }

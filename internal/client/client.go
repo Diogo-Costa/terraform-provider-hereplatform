@@ -9,8 +9,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
@@ -180,6 +182,11 @@ func (t *transport) send(
 			logKeyOperation: op, "method": req.Method, "path": req.URL.EscapedPath(), "attempt": attempt,
 		})
 
+		// A create that fails after its headers were written may still have been applied.
+		var written atomic.Bool
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			WroteHeaders: func() { written.Store(true) },
+		}))
 		httpResp, err := t.http.Do(req)
 		var resp *response
 		if err == nil {
@@ -187,13 +194,15 @@ func (t *transport) send(
 		}
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, fmt.Errorf("%s: %w", op, ctxErr)
-			}
-			if attempt < t.retry.MaxAttempts && isRetryableNetError(err, idempotent) {
+				err = fmt.Errorf("%s: %w", op, ctxErr)
+			} else if attempt < t.retry.MaxAttempts && isRetryableNetError(err, idempotent) {
 				wait := expBackoff(attempt, t.retry.MinBackoff, t.retry.MaxBackoff)
 				if t.wait(ctx, op, wait, "network error") {
 					continue
 				}
+			}
+			if !idempotent && written.Load() {
+				return nil, &UnconfirmedError{Err: err}
 			}
 			return nil, err
 		}
@@ -213,6 +222,9 @@ func (t *transport) send(
 			if wait <= t.retry.MaxRetryAfter && t.wait(ctx, op, wait, fmt.Sprintf("HTTP %d", resp.status)) {
 				continue
 			}
+		}
+		if !idempotent && isServerFailure(resp.status) {
+			return nil, &UnconfirmedError{Err: apiErr}
 		}
 		return nil, apiErr
 	}
@@ -293,7 +305,11 @@ func (c *Client) do(ctx context.Context, r request, out any) (*response, error) 
 	}
 	if out != nil && len(bytes.TrimSpace(resp.body)) > 0 {
 		if json.Unmarshal(resp.body, out) != nil {
-			return nil, fmt.Errorf("%s: response is not valid JSON", op)
+			err := fmt.Errorf("%s: response is not valid JSON", op)
+			if !r.idempotent {
+				return nil, &UnconfirmedError{Err: err}
+			}
+			return nil, err
 		}
 	}
 	return resp, nil

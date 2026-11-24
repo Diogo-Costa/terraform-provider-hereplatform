@@ -145,15 +145,15 @@ func exceedsDeadline(ctx context.Context, wait time.Duration) bool {
 	return ok && time.Until(deadline) < wait
 }
 
+// isRetryableStatus retries throttled requests, which HERE did not process, and server
+// failures of idempotent ones: a server failure, 503 included, may arrive after HERE applied
+// a create, and replaying it could duplicate an app or take one of the two API key slots.
 func isRetryableStatus(status int, idempotent bool) bool {
-	if status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable {
-		return true
-	}
-	// A 500/502/504 may arrive after the server applied a create; replaying it could
-	// duplicate apps or consume one of the two API key slots.
-	if !idempotent {
-		return false
-	}
+	return status == http.StatusTooManyRequests || idempotent && isServerFailure(status)
+}
+
+// isServerFailure matches 5xx responses other than those that fail every attempt.
+func isServerFailure(status int) bool {
 	return status >= http.StatusInternalServerError && status != http.StatusNotImplemented &&
 		status != http.StatusHTTPVersionNotSupported
 }
