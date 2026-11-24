@@ -94,19 +94,76 @@ func TestResolveSettingsPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := providerModel{AccessKeySecret: types.StringValue(" attr-secret ")}
-	s, diags := resolveSettings(m, envOf(map[string]string{envCredentialsFile: file, envAccessKeyID: "env-akid"}))
+	s, diags := resolveSettings(m, envOf(map[string]string{
+		envCredentialsFile: file, envAccessKeyID: "env-akid", envAllowCustomEndpoints: "1",
+	}))
 	if diags.HasError() {
 		t.Fatalf("unexpected errors: %s", diagText(diags))
 	}
 	want := settings{
-		clientID:        "file-client",
-		accessKeyID:     "env-akid",
-		accessKeySecret: "attr-secret",
-		tokenURL:        "https://token.example.com/oauth2/token",
-		apiURL:          client.DefaultAPIURL,
+		clientID:             "file-client",
+		accessKeyID:          "env-akid",
+		accessKeySecret:      "attr-secret",
+		tokenURL:             "https://token.example.com/oauth2/token",
+		apiURL:               client.DefaultAPIURL,
+		allowCustomEndpoints: true,
 	}
 	if s != want {
 		t.Fatalf("settings = %+v, want %+v", s, want)
+	}
+}
+
+func TestResolveSettingsEndpointPolicy(t *testing.T) {
+	tests := map[string]struct {
+		model          providerModel
+		env            map[string]string
+		error, warning string
+	}{
+		"HERE endpoints": {},
+		"loopback test servers": {env: map[string]string{
+			envAPIURL: "http://127.0.0.1:8080/authentication/v1.1", envTokenURL: "https://[::1]:8443/oauth2/token",
+		}},
+		"localhost by name": {
+			env:   map[string]string{envAPIURL: "http://localhost:8080/authentication/v1.1"},
+			error: "Invalid api_url: HTTPS is required (plain HTTP is accepted only for literal loopback IP addresses).",
+		},
+		"custom host": {
+			model: providerModel{APIURL: types.StringValue("https://iam.example.com/authentication/v1.1")},
+			error: "Invalid api_url: not a HERE endpoint: iam.example.com is neither account.api.here.com nor a " +
+				"literal loopback IP address. To send requests to another HTTPS host, set HERE_ALLOW_CUSTOM_ENDPOINTS=1",
+		},
+		"lookalike HERE host": {
+			env:   map[string]string{envTokenURL: "https://account.api.here.com.example.com/oauth2/token"},
+			error: "Invalid token_url: not a HERE endpoint",
+		},
+		"opt-in": {
+			model: providerModel{TokenURL: types.StringValue("https://token.example.com:8443/oauth2/token")},
+			env:   map[string]string{envAllowCustomEndpoints: "1"},
+			warning: "Custom HERE endpoint: token_url points to token.example.com:8443, which is not a HERE endpoint " +
+				"and receives the signed client credentials",
+		},
+		"opt-in still requires HTTPS": {
+			env:   map[string]string{envAllowCustomEndpoints: "1", envAPIURL: "http://iam.example.com/"},
+			error: "Invalid api_url: HTTPS is required",
+		},
+		"opt-in other than 1": {
+			env:   map[string]string{envAllowCustomEndpoints: "true", envAPIURL: "https://iam.example.com/"},
+			error: "Invalid api_url: not a HERE endpoint",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, diags := resolveSettings(tc.model, envOf(tc.env))
+			text := diagText(diags)
+			if diags.HasError() != (tc.error != "") || diags.WarningsCount() != min(len(tc.warning), 1) {
+				t.Fatalf("unexpected diagnostics: %s", text)
+			}
+			for _, want := range []string{tc.error, tc.warning} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("diagnostics %q do not contain %q", text, want)
+				}
+			}
+		})
 	}
 }
 

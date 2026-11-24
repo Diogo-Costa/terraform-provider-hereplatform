@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"errors"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -21,6 +23,8 @@ const (
 	envCredentialsFile = "HERE_CREDENTIALS_FILE"
 	envTokenURL        = "HERE_TOKEN_URL" //nolint:gosec // an environment variable name, not a credential.
 	envAPIURL          = "HERE_API_URL"
+	// Read from the environment only: no configuration alone can send credentials outside HERE.
+	envAllowCustomEndpoints = "HERE_ALLOW_CUSTOM_ENDPOINTS"
 )
 
 // HERE JWK kid rules: 1-256 characters from [A-Za-z0-9._-].
@@ -34,6 +38,8 @@ type settings struct {
 	accessKeySecret string
 	tokenURL        string
 	apiURL          string
+	// allowCustomEndpoints is the HERE_ALLOW_CUSTOM_ENDPOINTS=1 opt-in.
+	allowCustomEndpoints bool
 }
 
 // resolveConfig merges provider arguments, HERE_* variables and the credentials file, in
@@ -48,7 +54,9 @@ func resolveConfig(m providerModel, getenv func(string) string) (client.Config, 
 	if diags.HasError() {
 		return client.Config{}, diags
 	}
-	return client.Config{APIURL: s.apiURL, TokenURL: s.tokenURL, Auth: auth}, diags
+	return client.Config{
+		APIURL: s.apiURL, TokenURL: s.tokenURL, Auth: auth, AllowCustomEndpoints: s.allowCustomEndpoints,
+	}, diags
 }
 
 func resolveSettings(m providerModel, getenv func(string) string) (settings, diag.Diagnostics) {
@@ -100,13 +108,33 @@ func resolveSettings(m providerModel, getenv func(string) string) (settings, dia
 		accessKeySecret: firstValue(m.AccessKeySecret, getenv(envAccessKeySecret), creds.AccessKeySecret),
 		tokenURL:        firstValue(m.TokenURL, getenv(envTokenURL), creds.TokenURL, client.DefaultTokenURL),
 		apiURL:          firstValue(m.APIURL, getenv(envAPIURL), client.DefaultAPIURL),
+
+		allowCustomEndpoints: getenv(envAllowCustomEndpoints) == "1",
 	}
-	for _, e := range []struct{ name, value string }{{"token_url", s.tokenURL}, {"api_url", s.apiURL}} {
-		if err := client.ValidateEndpoint(e.value); err != nil {
+	checkEndpoints(s, &diags)
+	return s, diags
+}
+
+func checkEndpoints(s settings, diags *diag.Diagnostics) {
+	for _, e := range []struct{ name, value, receives string }{
+		{"token_url", s.tokenURL, "the signed client credentials of every token request"},
+		{"api_url", s.apiURL, "the access token, which can manage every app the provider can reach"},
+	} {
+		err := client.ValidateEndpoint(e.value)
+		switch {
+		case err == nil:
+		case !errors.Is(err, client.ErrCustomEndpoint):
 			diags.AddAttributeError(path.Root(e.name), "Invalid "+e.name, err.Error()+".")
+		case !s.allowCustomEndpoints:
+			diags.AddAttributeError(path.Root(e.name), "Invalid "+e.name, err.Error()+". To send requests to "+
+				"another HTTPS host, set "+envAllowCustomEndpoints+"=1 in the environment of Terraform.")
+		default:
+			u, _ := url.Parse(e.value)
+			diags.AddAttributeWarning(path.Root(e.name), "Custom HERE endpoint",
+				e.name+" points to "+u.Host+", which is not a HERE endpoint and receives "+e.receives+". It is "+
+					"accepted because "+envAllowCustomEndpoints+"=1 is set; unset it unless you trust that host.")
 		}
 	}
-	return s, diags
 }
 
 func resolveAuth(s settings, diags *diag.Diagnostics) client.Auth {

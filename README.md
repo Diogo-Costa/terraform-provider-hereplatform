@@ -54,6 +54,11 @@ key, client ID and token URL can also come from a HERE `credentials.properties` 
 | `token_url` | `HERE_TOKEN_URL` | Defaults to `https://account.api.here.com/oauth2/token`. |
 | `api_url` | `HERE_API_URL` | Defaults to `https://account.api.here.com/authentication/v1.1`. |
 
+`token_url` and `api_url` accept only `account.api.here.com`, plus literal loopback IP addresses for
+test servers, because both receive credentials. To use another HTTPS host, set
+`HERE_ALLOW_CUSTOM_ENDPOINTS=1` in Terraform's environment; no configuration can, and the provider
+warns on every run while it is in use.
+
 - **OAuth 2.1 `private_key_jwt` (recommended):** the provider signs a short-lived RS256 client
   assertion per token request, so no shared secret is sent.
 - **Access key (OAuth 1.0):** HMAC-SHA256 signed token requests.

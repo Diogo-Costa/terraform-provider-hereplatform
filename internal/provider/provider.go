@@ -69,6 +69,10 @@ func (p *hereProvider) Metadata(_ context.Context, _ provider.MetadataRequest, r
 	resp.Version = p.version
 }
 
+const endpointPolicy = "Only HTTPS URLs of `account.api.here.com` are accepted, plus HTTP or HTTPS URLs of literal " +
+	"loopback IP addresses for test servers. Other HTTPS hosts require `" + envAllowCustomEndpoints + "=1` in the " +
+	"environment, which no configuration can set, and produce a warning."
+
 func (p *hereProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Manages HERE platform identity and access management: apps, API keys and trusted domains.",
@@ -106,12 +110,13 @@ func (p *hereProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp 
 			},
 			"token_url": schema.StringAttribute{
 				MarkdownDescription: "OAuth token endpoint. Defaults to `" + envTokenURL + "`, then to " +
-					"`here.token.endpoint.url` in `credentials_file`, then to `" + client.DefaultTokenURL + "`.",
+					"`here.token.endpoint.url` in `credentials_file`, then to `" + client.DefaultTokenURL + "`. " +
+					endpointPolicy,
 				Optional: true,
 			},
 			"api_url": schema.StringAttribute{
 				MarkdownDescription: "Base URL of the HERE Authentication API v1.1. Defaults to `" + envAPIURL +
-					"`, then to `" + client.DefaultAPIURL + "`.",
+					"`, then to `" + client.DefaultAPIURL + "`. " + endpointPolicy,
 				Optional: true,
 			},
 		},

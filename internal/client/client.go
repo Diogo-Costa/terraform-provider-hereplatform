@@ -24,6 +24,7 @@ const (
 
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"
+	hereHost    = "account.api.here.com"
 
 	logKeyOperation = "operation"
 
@@ -44,6 +45,8 @@ type Config struct {
 	Poll        PollPolicy
 	Now         func() time.Time
 	Sleep       func(context.Context, time.Duration) error
+	// AllowCustomEndpoints accepts HTTPS hosts other than HERE's; see ValidateEndpoint.
+	AllowCustomEndpoints bool
 }
 
 // Client calls the HERE Authentication API v1.1. It is safe for concurrent use.
@@ -57,11 +60,11 @@ type Client struct {
 // New validates cfg and returns a Client.
 func New(cfg Config) (*Client, error) {
 	apiURL := strings.TrimRight(firstNonEmpty(cfg.APIURL, DefaultAPIURL), "/")
-	if err := ValidateEndpoint(apiURL); err != nil {
+	if err := checkEndpoint(apiURL, cfg.AllowCustomEndpoints); err != nil {
 		return nil, fmt.Errorf("invalid API URL: %w", err)
 	}
 	tokenURL := firstNonEmpty(cfg.TokenURL, DefaultTokenURL)
-	if err := ValidateEndpoint(tokenURL); err != nil {
+	if err := checkEndpoint(tokenURL, cfg.AllowCustomEndpoints); err != nil {
 		return nil, fmt.Errorf("invalid token URL: %w", err)
 	}
 
@@ -96,8 +99,14 @@ func New(cfg Config) (*Client, error) {
 	return &Client{apiURL: apiURL, tokens: tokens, t: t, poll: cfg.Poll.withDefaults()}, nil
 }
 
-// ValidateEndpoint rejects URLs that would send credentials in clear text or to an
-// ambiguous location. Plain HTTP is accepted only for loopback test servers.
+// ErrCustomEndpoint marks a well-formed HTTPS URL outside HERE. Both endpoints receive
+// credentials that can manage every app the provider reaches, so other hosts need an
+// explicit opt-in.
+var ErrCustomEndpoint = errors.New("not a HERE endpoint")
+
+// ValidateEndpoint accepts HTTPS URLs of account.api.here.com, and HTTP or HTTPS URLs of
+// literal loopback IP addresses for test servers; host names such as localhost can resolve
+// elsewhere. Other HTTPS hosts get ErrCustomEndpoint.
 func ValidateEndpoint(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -110,21 +119,27 @@ func ValidateEndpoint(raw string) error {
 		return errors.New("user information is not allowed in the URL")
 	case u.RawQuery != "" || u.Fragment != "":
 		return errors.New("query strings and fragments are not allowed")
-	case u.Scheme == schemeHTTPS:
-		return nil
-	case u.Scheme == schemeHTTP && isLoopback(u.Hostname()):
+	case u.Scheme != schemeHTTPS && u.Scheme != schemeHTTP:
+		return fmt.Errorf("unsupported scheme %q", u.Scheme)
+	case isLoopbackIP(u.Hostname()):
 		return nil
 	case u.Scheme == schemeHTTP:
-		return errors.New("HTTPS is required (plain HTTP is accepted only for loopback addresses)")
+		return errors.New("HTTPS is required (plain HTTP is accepted only for literal loopback IP addresses)")
+	case strings.EqualFold(u.Hostname(), hereHost) && (u.Port() == "" || u.Port() == "443"):
+		return nil
 	default:
-		return fmt.Errorf("unsupported scheme %q", u.Scheme)
+		return fmt.Errorf("%w: %s is neither %s nor a literal loopback IP address", ErrCustomEndpoint, u.Host, hereHost)
 	}
 }
 
-func isLoopback(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
+func checkEndpoint(raw string, allowCustom bool) error {
+	if err := ValidateEndpoint(raw); err != nil && (!allowCustom || !errors.Is(err, ErrCustomEndpoint)) {
+		return err
 	}
+	return nil
+}
+
+func isLoopbackIP(host string) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }

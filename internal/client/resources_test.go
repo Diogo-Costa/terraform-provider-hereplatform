@@ -348,14 +348,32 @@ func TestReadCredentialsFile(t *testing.T) {
 }
 
 func TestValidateEndpoint(t *testing.T) {
-	valid := []string{DefaultTokenURL, DefaultAPIURL, "http://127.0.0.1:8080/x", "http://localhost:1/", "http://[::1]:9/"}
+	valid := []string{
+		DefaultTokenURL, DefaultAPIURL, "https://Account.API.here.com:443/x",
+		"http://127.0.0.1:8080/x", "https://127.0.0.1:8443/x", "http://127.4.5.6/", "http://[::1]:9/",
+	}
 	for _, raw := range valid {
 		if err := ValidateEndpoint(raw); err != nil {
 			t.Errorf("ValidateEndpoint(%q) = %v", raw, err)
 		}
 	}
+	custom := []string{
+		"https://iam.example.com/authentication/v1.1",
+		"https://account.api.here.com:8443/",
+		"https://account.api.here.com.example.com/",
+		"https://localhost/",
+		"https://127.0.0.1.nip.io/",
+	}
+	for _, raw := range custom {
+		if err := ValidateEndpoint(raw); !errors.Is(err, ErrCustomEndpoint) {
+			t.Errorf("ValidateEndpoint(%q) = %v, want ErrCustomEndpoint", raw, err)
+		}
+	}
 	invalid := []string{
 		"http://account.api.here.com/oauth2/token",
+		"http://localhost:1/",
+		"http://2130706433/",
+		"http://iam.example.com/",
 		"https://user:hunter2@account.api.here.com/",
 		"https://account.api.here.com/?a=b",
 		"https://account.api.here.com/#frag",
@@ -365,8 +383,8 @@ func TestValidateEndpoint(t *testing.T) {
 	}
 	for _, raw := range invalid {
 		err := ValidateEndpoint(raw)
-		if err == nil {
-			t.Errorf("ValidateEndpoint(%q) accepted an unsafe URL", raw)
+		if err == nil || errors.Is(err, ErrCustomEndpoint) {
+			t.Errorf("ValidateEndpoint(%q) = %v, want a hard error", raw, err)
 			continue
 		}
 		if strings.Contains(err.Error(), "hunter2") {
@@ -376,14 +394,31 @@ func TestValidateEndpoint(t *testing.T) {
 }
 
 func TestNewRejectsInvalidConfig(t *testing.T) {
+	static := StaticTokenSource("x")
 	if _, err := New(Config{}); err == nil {
 		t.Fatal("expected an error without authentication")
 	}
-	if _, err := New(Config{APIURL: "http://example.com", TokenSource: StaticTokenSource("x")}); err == nil {
+	if _, err := New(Config{APIURL: "http://example.com", TokenSource: static}); err == nil {
 		t.Fatal("expected an error for a plain HTTP API URL")
 	}
-	if _, err := New(Config{TokenURL: "http://example.com", TokenSource: StaticTokenSource("x")}); err == nil {
+	if _, err := New(Config{TokenURL: "http://example.com", TokenSource: static}); err == nil {
 		t.Fatal("expected an error for a plain HTTP token URL")
+	}
+	for _, cfg := range []Config{
+		{APIURL: "https://iam.example.com", TokenSource: static},
+		{TokenURL: "https://iam.example.com/oauth2/token", TokenSource: static},
+		{APIURL: "http://iam.example.com", TokenSource: static, AllowCustomEndpoints: true},
+	} {
+		if _, err := New(cfg); err == nil {
+			t.Errorf("New accepted API URL %q and token URL %q", cfg.APIURL, cfg.TokenURL)
+		}
+	}
+	allowed := Config{
+		APIURL: "https://iam.example.com", TokenURL: "https://iam.example.com/oauth2/token",
+		TokenSource: static, AllowCustomEndpoints: true,
+	}
+	if _, err := New(allowed); err != nil {
+		t.Fatalf("opt-in rejected: %v", err)
 	}
 }
 
