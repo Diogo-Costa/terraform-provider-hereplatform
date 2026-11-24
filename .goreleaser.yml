@@ -2,7 +2,9 @@ version: 2
 
 before:
   hooks:
-    - go mod tidy
+    # Fail on an untidy or altered module graph instead of fixing it at release time.
+    - go mod tidy -diff
+    - go mod verify
 
 builds:
   - env:

@@ -4,6 +4,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # New versions wait a week, time for a compromised release to be caught; security updates do not.
+    cooldown:
+      default-days: 7
     groups:
       terraform-plugin:
         patterns:
@@ -13,6 +16,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns:
