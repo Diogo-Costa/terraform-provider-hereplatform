@@ -59,8 +59,9 @@ release:
   extra_files:
     - glob: 'terraform-registry-manifest.json'
       name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
-  # Published by hand after review; the Terraform Registry ingests published releases only.
-  draft: true
+  # No draft: goreleaser publishes only after uploading every asset; the registry ingests published releases only.
 
+# The release notes are the version's CHANGELOG.md section, passed with --release-notes; goreleaser
+# ignores that flag when the changelog is disabled.
 changelog:
-  disable: true
+  disable: false

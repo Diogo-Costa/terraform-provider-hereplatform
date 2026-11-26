@@ -53,6 +53,9 @@ jobs:
             echo "::error::The tag does not point to a commit on main."
             exit 1
           fi
+      # Also before any secret: a version without its own CHANGELOG.md section is not released.
+      - name: Read the release notes from CHANGELOG.md
+        run: ./scripts/release-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
@@ -69,7 +72,7 @@ jobs:
         with:
           distribution: goreleaser
           version: v2.20.3
-          args: release --clean
+          args: release --clean --release-notes=${{ runner.temp }}/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}

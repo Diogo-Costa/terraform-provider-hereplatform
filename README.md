@@ -221,6 +221,23 @@ provider_installation {
 }
 ```
 
+## Releases
+
+The release notes of each version are its section in [CHANGELOG.md](CHANGELOG.md): a `## X.Y.Z`
+heading, optionally followed by a date, as in `## 0.2.0 (January 5, 2027)`.
+
+1. In a pull request, add the version's section to `CHANGELOG.md`. Preview its notes with
+   `./scripts/release-notes.sh vX.Y.Z`.
+2. After the merge, the repository admin tags `main` with a signed annotated tag and pushes it:
+   `git tag -s vX.Y.Z -m "vX.Y.Z: <summary>"`, then `git push origin vX.Y.Z`.
+3. The release workflow checks that the tag is on `main` and reads the notes. It stops if the
+   section is missing, empty or marked as unreleased. GoReleaser then builds and signs the
+   archives, and publishes the GitHub release once every asset is uploaded.
+4. The Terraform Registry ingests the published release.
+
+Releases are immutable: once a version is published, its assets and its tag can't be changed or
+deleted, so a defect ships as a new version.
+
 ## License
 
 [MPL-2.0](LICENSE)
