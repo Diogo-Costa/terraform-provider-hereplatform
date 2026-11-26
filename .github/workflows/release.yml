@@ -13,9 +13,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # No secrets: a release is never signed with a vulnerability known on the day it is tagged.
+  vulncheck:
+    name: Vulnerability check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check for known vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
+
   goreleaser:
     name: GoReleaser
-    # Holds the signing secrets, behind an approval and limited to v* tags.
+    # The signing key is loaded only after the vulnerability check passes.
+    needs: vulncheck
+    # Holds the signing secrets, limited to v* tags.
     environment: release
     runs-on: ubuntu-latest
     timeout-minutes: 30
