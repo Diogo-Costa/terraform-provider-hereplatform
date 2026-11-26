@@ -32,6 +32,10 @@ jobs:
       - run: go vet ./...
       - name: Check that go.mod and go.sum are tidy
         run: go mod tidy -diff
+      # Dependabot sees only GitHub-reviewed advisories; govulncheck reads the Go vulnerability
+      # database and fails only on vulnerabilities the provider's code can reach.
+      - name: Check for known vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
 
   lint:
     name: Lint

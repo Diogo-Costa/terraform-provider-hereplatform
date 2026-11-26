@@ -204,6 +204,11 @@ from this repository when the repository variable `RUN_ACCEPTANCE_TESTS` is `tru
 Runs are serialized, and each ends with a sweep. Releases run from `v*` tags on `main`, in the
 `release` environment.
 
+The Build job runs [govulncheck](https://go.dev/blog/govulncheck), and fails when the provider's
+code can reach a known vulnerability. A release runs it again before it loads the signing key. A new
+advisory in the Go standard library fails both until the toolchain in `go.mod` moves to a fixed Go
+release.
+
 To try a local build, point Terraform at it with a
 [development override](https://developer.hashicorp.com/terraform/cli/config/config-file#development-overrides-for-provider-developers):
 
